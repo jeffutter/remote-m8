@@ -11,6 +11,10 @@ use axum::{
     Router,
 };
 use clap::Parser;
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    SampleRate, SupportedStreamConfig,
+};
 use futures::{SinkExt, StreamExt};
 use serialport::{DataBits, FlowControl, Parity};
 use tokio::sync::broadcast::{Receiver, Sender};
@@ -40,16 +44,16 @@ struct Args {
 }
 
 struct AppState {
-    serial_broadcast_receiver: Receiver<Message>,
-    serial_broadcast_sender: Sender<Message>,
+    broadcast_receiver: Receiver<Message>,
+    broadcast_sender: Sender<Message>,
     serial_control_sender: std::sync::mpsc::Sender<WebsocketCmd>,
 }
 
 impl Clone for AppState {
     fn clone(&self) -> Self {
         Self {
-            serial_broadcast_sender: self.serial_broadcast_sender.clone(),
-            serial_broadcast_receiver: self.serial_broadcast_sender.subscribe(),
+            broadcast_sender: self.broadcast_sender.clone(),
+            broadcast_receiver: self.broadcast_sender.subscribe(),
             serial_control_sender: self.serial_control_sender.clone(),
         }
     }
@@ -90,12 +94,52 @@ async fn main() {
 
     if let Some(serial_path) = args.serial.path {
         let (serial_sender, mut serial_receiver) = tokio::sync::mpsc::channel::<Message>(1024);
-        let (serial_broadcast_sender, serial_broadcast_receiver) =
+        let (broadcast_sender, broadcast_receiver) =
             tokio::sync::broadcast::channel::<Message>(1024);
         let (serial_control_sender, serial_control_receiver) =
             std::sync::mpsc::channel::<WebsocketCmd>();
 
-        let handler = thread::spawn(move || {
+        let (audio_sender, mut audio_receiver) = tokio::sync::mpsc::channel::<Message>(1024);
+
+        let audio_handler = thread::spawn(move || {
+            let host = cpal::default_host();
+            let m8_audio_input_device = host
+                .input_devices()
+                .into_iter()
+                .find_map(|mut d| d.find(|x| x.name().is_ok_and(|name| name == "M8")))
+                .expect("Couldn't find M8 Audio Device");
+            let config = SupportedStreamConfig::new(
+                2,
+                SampleRate(44100),
+                cpal::SupportedBufferSize::Range { min: 4, max: 4096 },
+                cpal::SampleFormat::F32,
+            );
+            println!("Default input config: {:?}", config);
+            let err_fn = move |err| {
+                eprintln!("an error occurred on stream: {}", err);
+            };
+            let stream = m8_audio_input_device
+                .build_input_stream(
+                    &config.into(),
+                    move |data: &[f32], _: &_| {
+                        let u8_data = unsafe {
+                            std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
+                        };
+                        let mut vec_data: Vec<u8> = vec![b'A'];
+                        vec_data.extend_from_slice(u8_data);
+                        audio_sender
+                            .blocking_send(Message::Binary(vec_data))
+                            .unwrap();
+                    },
+                    err_fn,
+                    None,
+                )
+                .unwrap();
+
+            stream.play().unwrap();
+        });
+
+        let serial_handler = thread::spawn(move || {
             let mut sp = serialport::new(serial_path.clone(), BAUD_RATE)
                 .data_bits(DataBits::Eight)
                 .parity(Parity::None)
@@ -131,8 +175,10 @@ async fn main() {
                                 .unwrap();
                             break;
                         }
+                        let mut vec_data: Vec<u8> = vec![b'S'];
+                        vec_data.extend_from_slice(&buffer[..n]);
                         serial_sender
-                            .blocking_send(Message::Binary(buffer[..n].to_vec()))
+                            .blocking_send(Message::Binary(vec_data))
                             .unwrap();
                     }
                 }
@@ -152,18 +198,24 @@ async fn main() {
             }
         });
 
-        let serial_broadcast_sender1 = serial_broadcast_sender.clone();
+        let broadcast_sender1 = broadcast_sender.clone();
         tokio::spawn(async move {
             loop {
-                if let Some(msg) = serial_receiver.recv().await {
-                    serial_broadcast_sender1.send(msg).unwrap();
+                tokio::select! {
+                    Some(msg) = serial_receiver.recv() => {
+                        broadcast_sender1.send(msg).unwrap();
+                    }
+                    Some(msg) = audio_receiver.recv() => {
+                        broadcast_sender1.send(msg).unwrap();
+                    }
+
                 }
             }
         });
 
         let state = AppState {
-            serial_broadcast_receiver,
-            serial_broadcast_sender,
+            broadcast_receiver,
+            broadcast_sender,
             serial_control_sender,
         };
 
@@ -203,7 +255,7 @@ async fn handle_socket(socket: WebSocket, mut state: AppState) {
 
     loop {
         tokio::select! {
-            msg = state.serial_broadcast_receiver.recv() => {
+            msg = state.broadcast_receiver.recv() => {
                 match msg {
                     Ok(msg) => sender.send(msg).await.unwrap(),
                     Err(_recv_error) => {
