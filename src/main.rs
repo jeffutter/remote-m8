@@ -1,5 +1,5 @@
 use core::panic;
-use std::{borrow::Cow, path::PathBuf, sync::Arc, time::Duration};
+use std::{borrow::Cow, path::PathBuf, thread, time::Duration};
 
 use axum::{
     extract::{
@@ -12,8 +12,8 @@ use axum::{
 };
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
-use serialport::{DataBits, FlowControl, Parity, SerialPort};
-use tokio::{sync::Mutex, time::timeout};
+use serialport::{DataBits, FlowControl, Parity};
+use tokio::sync::broadcast::{Receiver, Sender};
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
@@ -39,13 +39,35 @@ struct Args {
     port: usize,
 }
 
-#[derive(Clone)]
 struct AppState {
-    serial: Arc<Mutex<Box<dyn SerialPort>>>,
-    serial_path: String,
+    serial_broadcast_receiver: Receiver<Message>,
+    serial_broadcast_sender: Sender<Message>,
+    serial_control_sender: std::sync::mpsc::Sender<WebsocketCmd>,
+}
+
+impl Clone for AppState {
+    fn clone(&self) -> Self {
+        Self {
+            serial_broadcast_sender: self.serial_broadcast_sender.clone(),
+            serial_broadcast_receiver: self.serial_broadcast_sender.subscribe(),
+            serial_control_sender: self.serial_control_sender.clone(),
+        }
+    }
 }
 
 const BAUD_RATE: u32 = 9600; // 115200
+
+#[repr(u8)]
+enum SerialCmd {
+    Disconnect = 0x44,
+    Enable = 0x45,
+    Reset = 0x52,
+}
+
+enum WebsocketCmd {
+    Connect,
+    WsMessage(Vec<u8>),
+}
 
 #[tokio::main]
 async fn main() {
@@ -67,17 +89,82 @@ async fn main() {
     }
 
     if let Some(serial_path) = args.serial.path {
-        let sp = serialport::new(serial_path.clone(), BAUD_RATE)
-            .data_bits(DataBits::Eight)
-            .parity(Parity::None)
-            .stop_bits(serialport::StopBits::One)
-            .flow_control(FlowControl::None)
-            .open()
-            .unwrap();
+        let (serial_sender, mut serial_receiver) = tokio::sync::mpsc::channel::<Message>(1024);
+        let (serial_broadcast_sender, serial_broadcast_receiver) =
+            tokio::sync::broadcast::channel::<Message>(1024);
+        let (serial_control_sender, serial_control_receiver) =
+            std::sync::mpsc::channel::<WebsocketCmd>();
+
+        let handler = thread::spawn(move || {
+            let mut sp = serialport::new(serial_path.clone(), BAUD_RATE)
+                .data_bits(DataBits::Eight)
+                .parity(Parity::None)
+                .stop_bits(serialport::StopBits::One)
+                .flow_control(FlowControl::None)
+                .open()
+                .unwrap();
+
+            sp.write_all(&[SerialCmd::Disconnect as u8]).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            sp.write_all(&[SerialCmd::Enable as u8, SerialCmd::Reset as u8])
+                .unwrap();
+            println!("Serial Init");
+
+            // let mut buffer = [0; 1024];
+            let mut buffer = [0; 4096];
+            loop {
+                match sp.read(&mut buffer[..]) {
+                    Err(e) => {
+                        if e.kind() == std::io::ErrorKind::TimedOut {
+                            //
+                        } else {
+                            panic!("Unknown Serial Error: {}", e);
+                        }
+                    }
+                    Ok(n) => {
+                        if n == 0 {
+                            serial_sender
+                                .blocking_send(Message::Close(Some(CloseFrame {
+                                    code: axum::extract::ws::close_code::NORMAL,
+                                    reason: Cow::from("Goodbye"),
+                                })))
+                                .unwrap();
+                            break;
+                        }
+                        serial_sender
+                            .blocking_send(Message::Binary(buffer[..n].to_vec()))
+                            .unwrap();
+                    }
+                }
+
+                match serial_control_receiver.recv_timeout(Duration::from_millis(10)) {
+                    Ok(WebsocketCmd::Connect) => {
+                        sp.write_all(&[SerialCmd::Enable as u8, SerialCmd::Reset as u8])
+                            .unwrap();
+                    }
+                    Ok(WebsocketCmd::WsMessage(msg)) => {
+                        sp.write_all(&msg).unwrap();
+                    }
+                    Err(_timeout) => {
+                        //
+                    }
+                }
+            }
+        });
+
+        let serial_broadcast_sender1 = serial_broadcast_sender.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Some(msg) = serial_receiver.recv().await {
+                    serial_broadcast_sender1.send(msg).unwrap();
+                }
+            }
+        });
 
         let state = AppState {
-            serial: Arc::new(Mutex::new(sp)),
-            serial_path,
+            serial_broadcast_receiver,
+            serial_broadcast_sender,
+            serial_control_sender,
         };
 
         // let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend/deploy");
@@ -106,61 +193,36 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    let mut serial = state.serial.lock_owned().await;
-    serial.write_all(&[0x44]).unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    serial.write_all(&[0x45, 0x52]).unwrap();
-    println!("Serial Init");
-
-    // let mut buffer = [0; 1024];
-    let mut buffer = [0; 4096];
-
+async fn handle_socket(socket: WebSocket, mut state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
-    loop {
-        match serial.read(&mut buffer[..]) {
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::TimedOut {
-                    //
-                } else {
-                    panic!("Unknown Serial Error: {}", e);
-                }
-            }
-            Ok(n) => {
-                if n == 0 {
-                    sender
-                        .send(Message::Close(Some(CloseFrame {
-                            code: axum::extract::ws::close_code::NORMAL,
-                            reason: Cow::from("Goodbye"),
-                        })))
-                        .await
-                        .unwrap();
-                    break;
-                }
-                sender
-                    .send(Message::Binary(buffer[..n].to_vec()))
-                    .await
-                    .unwrap();
-            }
-        }
+    state
+        .serial_control_sender
+        .send(WebsocketCmd::Connect)
+        .unwrap();
 
-        match timeout(Duration::from_millis(10), receiver.next()).await {
-            Ok(None) => {
-                //
+    loop {
+        tokio::select! {
+            msg = state.serial_broadcast_receiver.recv() => {
+                match msg {
+                    Ok(msg) => sender.send(msg).await.unwrap(),
+                    Err(_recv_error) => {
+                        break;
+                    },
+                }
             }
-            Ok(Some(Err(e))) => {
-                //
-            }
-            Ok(Some(Ok(msg))) => match msg {
-                Message::Text(_) => todo!(),
-                Message::Binary(bytes) => serial.write_all(&bytes).unwrap(),
-                Message::Ping(_) => todo!(),
-                Message::Pong(_) => todo!(),
-                Message::Close(_) => todo!(),
-            },
-            Err(_) => {
-                //Timeout
+            msg = receiver.next() => {
+                match msg {
+                    None => (),
+                    Some(Err(e)) => {
+                        eprintln!("Unknown WS Error: {:?}", e);
+                        break;
+                    },
+                    Some(Ok(Message::Binary(bytes))) => {
+                        state.serial_control_sender.send(WebsocketCmd::WsMessage(bytes)).unwrap()
+                    }
+                    Some(Ok(msg)) => todo!("Unknown WS Message: {:?}", msg)
+                }
             }
         }
     }
