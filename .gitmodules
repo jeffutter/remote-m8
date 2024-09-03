@@ -1,0 +1,3 @@
+[submodule "M8WebDisplay"]
+	path = frontend
+	url = git@github.com:jeffutter/M8WebDisplay.git

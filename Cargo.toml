@@ -1,0 +1,20 @@
+[package]
+name = "remote-m8"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7.5", features = ["tokio", "ws"] }
+axum-extra = { version = "0.9.3", features = ["typed-header"] }
+clap = { version = "4.5.16", features = ["derive"] }
+futures = "0.3.30"
+headers = "0.4.0"
+serial-line-ip = "0.5.0"
+serialport = "4.5.0"
+tokio = { version = "1.40.0", features = ["rt-multi-thread", "time"] }
+tokio-tungstenite = "0.23.1"
+tower = "0.5.0"
+tower-http = { version = "0.5.2", features = ["fs", "trace"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tungstenite = "0.24.0"
