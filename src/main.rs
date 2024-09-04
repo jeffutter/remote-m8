@@ -1,5 +1,5 @@
 use core::panic;
-use std::{borrow::Cow, path::PathBuf, thread, time::Duration};
+use std::{borrow::Cow, io::Write, path::PathBuf, thread, time::Duration};
 
 use axum::{
     extract::{
@@ -15,6 +15,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     SampleRate, SupportedStreamConfig,
 };
+use flate2::{write::GzEncoder, Compression};
 use futures::{SinkExt, StreamExt};
 use serialport::{DataBits, FlowControl, Parity};
 use tokio::sync::broadcast::{Receiver, Sender};
@@ -93,13 +94,12 @@ async fn main() {
     }
 
     if let Some(serial_path) = args.serial.path {
-        let (serial_sender, mut serial_receiver) = tokio::sync::mpsc::channel::<Message>(1024);
-        let (broadcast_sender, broadcast_receiver) =
-            tokio::sync::broadcast::channel::<Message>(1024);
+        let (serial_sender, mut serial_receiver) = tokio::sync::mpsc::channel::<Message>(8);
+        let (broadcast_sender, broadcast_receiver) = tokio::sync::broadcast::channel::<Message>(8);
         let (serial_control_sender, serial_control_receiver) =
             std::sync::mpsc::channel::<WebsocketCmd>();
 
-        let (audio_sender, mut audio_receiver) = tokio::sync::mpsc::channel::<Message>(1024);
+        let (audio_sender, mut audio_receiver) = tokio::sync::mpsc::channel::<Message>(8);
 
         let audio_handler = thread::spawn(move || {
             let host = cpal::default_host();
@@ -122,11 +122,25 @@ async fn main() {
                 .build_input_stream(
                     &config.into(),
                     move |data: &[f32], _: &_| {
+                        // Don't send if all 0's
+                        let (prefix, aligned, suffix) = unsafe { data.align_to::<u128>() };
+                        if prefix.iter().all(|&x| x == 0.0)
+                            && suffix.iter().all(|&x| x == 0.0)
+                            && aligned.iter().all(|&x| x == 0)
+                        {
+                            return;
+                        }
+
                         let u8_data = unsafe {
                             std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
                         };
+                        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                        encoder.write_all(u8_data).unwrap();
+                        let encoded = encoder.finish().unwrap();
+
                         let mut vec_data: Vec<u8> = vec![b'A'];
-                        vec_data.extend_from_slice(u8_data);
+                        vec_data.extend_from_slice(&encoded);
+
                         audio_sender
                             .blocking_send(Message::Binary(vec_data))
                             .unwrap();

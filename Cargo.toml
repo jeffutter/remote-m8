@@ -8,6 +8,7 @@ axum = { version = "0.7.5", features = ["tokio", "ws"] }
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
 clap = { version = "4.5.16", features = ["derive"] }
 cpal = "0.15.3"
+flate2 = "1.0.33"
 futures = "0.3.30"
 headers = "0.4.0"
 serialport = "4.5.0"
