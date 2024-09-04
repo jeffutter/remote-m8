@@ -1268,7 +1268,6 @@ dependencies = [
  "cpal",
  "futures",
  "headers",
- "serial-line-ip",
  "serialport",
  "tokio",
  "tokio-tungstenite 0.23.1",
@@ -1371,12 +1370,6 @@ dependencies = [
  "ryu",
  "serde",
 ]
-
-[[package]]
-name = "serial-line-ip"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08a0b86bcdab6b15029ff7e37ae8acdadbf5d48e070ec5a067aa5c31e306f958"
 
 [[package]]
 name = "serialport"

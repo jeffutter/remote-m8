@@ -154,8 +154,9 @@ async fn main() {
                 .unwrap();
             println!("Serial Init");
 
-            // let mut buffer = [0; 1024];
-            let mut buffer = [0; 4096];
+            let mut buffer = [0; 1024];
+            // let mut buffer = [0; 4096];
+            let mut work_buffer: Vec<u8> = Vec::new();
             loop {
                 match sp.read(&mut buffer[..]) {
                     Err(e) => {
@@ -175,11 +176,47 @@ async fn main() {
                                 .unwrap();
                             break;
                         }
-                        let mut vec_data: Vec<u8> = vec![b'S'];
-                        vec_data.extend_from_slice(&buffer[..n]);
-                        serial_sender
-                            .blocking_send(Message::Binary(vec_data))
-                            .unwrap();
+                        work_buffer.extend(&buffer[..n]);
+
+                        let mut split_at: Option<usize> = None;
+                        let mut it = work_buffer.iter().enumerate().peekable();
+                        while let Some((idx, e)) = it.next() {
+                            match (e, it.peek()) {
+                                (0xC0, None) => {
+                                    split_at = Some(idx);
+                                }
+                                (_e, None) => {
+                                    break;
+                                }
+                                (0xC0, _) => {
+                                    split_at = Some(idx);
+                                    continue;
+                                }
+                                (0xDB, Some((_, 0xDC))) => {
+                                    continue;
+                                }
+                                (0xDB, Some((_, 0xDD))) => {
+                                    continue;
+                                }
+                                (_, _) => continue,
+                            }
+                        }
+
+                        match split_at {
+                            None => {
+                                continue;
+                            }
+                            Some(idx) => {
+                                let tmp_buffer = work_buffer.clone();
+                                let (to_send, rest) = tmp_buffer.split_at(idx + 1);
+                                work_buffer = rest.to_vec();
+                                let mut vec_data: Vec<u8> = vec![b'S'];
+                                vec_data.extend_from_slice(to_send);
+                                serial_sender
+                                    .blocking_send(Message::Binary(vec_data.to_vec()))
+                                    .unwrap();
+                            }
+                        }
                     }
                 }
 
