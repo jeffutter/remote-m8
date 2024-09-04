@@ -15,14 +15,11 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     SampleRate, SupportedStreamConfig,
 };
-use flate2::{write::GzEncoder, Compression};
+use flate2::{write::ZlibEncoder, Compression};
 use futures::{SinkExt, StreamExt};
 use serialport::{DataBits, FlowControl, Parity};
 use tokio::sync::broadcast::{Receiver, Sender};
-use tower_http::{
-    services::ServeDir,
-    trace::{DefaultMakeSpan, TraceLayer},
-};
+use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Parser)]
@@ -134,7 +131,7 @@ async fn main() {
                         let u8_data = unsafe {
                             std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
                         };
-                        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
                         encoder.write_all(u8_data).unwrap();
                         let encoded = encoder.finish().unwrap();
 
@@ -206,12 +203,6 @@ async fn main() {
                                     split_at = Some(idx);
                                     continue;
                                 }
-                                (0xDB, Some((_, 0xDC))) => {
-                                    continue;
-                                }
-                                (0xDB, Some((_, 0xDD))) => {
-                                    continue;
-                                }
                                 (_, _) => continue,
                             }
                         }
@@ -277,12 +268,12 @@ async fn main() {
         let app = Router::new()
             .fallback_service(ServeDir::new(assets_dir).append_index_html_on_directories(true))
             .route("/ws", get(ws_handler))
-            .with_state(state)
-            // logging so we can see whats going on
-            .layer(
-                TraceLayer::new_for_http()
-                    .make_span_with(DefaultMakeSpan::default().include_headers(true)),
-            );
+            .with_state(state);
+        // logging so we can see whats going on
+        // .layer(
+        //     TraceLayer::new_for_http()
+        //         .make_span_with(DefaultMakeSpan::default().include_headers(true)),
+        // );
 
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", args.port))
             .await
