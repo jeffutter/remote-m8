@@ -15,6 +15,10 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
+    frontend = {
+      flake = false;
+      url = "git+file:./frontend";
+    };
   };
 
   outputs =
@@ -24,6 +28,7 @@
       flake-utils,
       rust-overlay,
       crane,
+      frontend,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -32,10 +37,31 @@
         pkgs = import nixpkgs { inherit system overlays; };
 
         lib = nixpkgs.lib;
-        # craneLib = crane.lib.${system};
         craneLib = crane.mkLib pkgs;
 
-        # src = lib.cleanSourceWith { src = craneLib.path ./.; };
+        frontendBuild = pkgs.buildNpmPackage {
+
+          # name of our derivation
+          name = "remote-m8-frontend";
+
+          src = frontend;
+
+          npmDepsHash = "sha256-NdtaaxQ0PcU6iJfxXshvAYg9JwyB3MN6wzeT+ahpaKE=";
+
+          dontNpmBuild = true;
+          nativeBuildInputs = with pkgs; [
+            perl
+            (writeShellScriptBin "git" ''
+              echo "${frontend.rev}"
+            '')
+          ];
+
+          installPhase = ''
+            mkdir $out
+            make DEPLOY_DIR=$out deploy
+          '';
+        };
+
         src = craneLib.cleanCargoSource ./.;
 
         envVars =
@@ -49,6 +75,7 @@
         commonArgs = (
           {
             inherit src;
+
             nativeBuildInputs = with pkgs; [
               rust-bin.stable.latest.default
               cargo
@@ -57,6 +84,7 @@
               rustc
               pkg-config
             ];
+
             buildInputs =
               with pkgs;
               [ ]
@@ -67,6 +95,15 @@
                 udev
               ]
               ++ lib.optionals stdenv.isDarwin [ libiconv ];
+
+            preConfigurePhases = [ "copyFrontend" ];
+
+            copyFrontend = ''
+              ls -l $TEMPDIR
+              ls -l $TEMPDIR/source
+              mkdir -p $TEMPDIR/source/frontend
+              cp -R ${frontendBuild} $TEMPDIR/source/frontend/deploy
+            '';
           }
           // envVars
         );
@@ -82,6 +119,7 @@
               patchelf \
                 --add-needed "${pkgs.alsa-lib}/lib/libasound.so.2" \
                 --add-needed "${pkgs.udev}/lib/libudev.so.1" \
+                --add-needed "${pkgs.libgcc}/lib/libgcc_s.so.1" \
                 $out/bin/remote-m8
             '';
           }

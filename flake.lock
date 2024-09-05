@@ -33,6 +33,22 @@
         "type": "github"
       }
     },
+    "frontend": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1725543978,
+        "narHash": "sha256-BKqUxJVtjZ82ooKe3JOUWIvTGoEhy2TGYCTj9qdY0CU=",
+        "ref": "refs/heads/remote",
+        "rev": "b976a86b0dc16be573171f069f8b5f1928b9cd7c",
+        "revCount": 142,
+        "type": "git",
+        "url": "file:./frontend"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:./frontend"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1725194671,
@@ -53,6 +69,7 @@
       "inputs": {
         "crane": "crane",
         "flake-utils": "flake-utils",
+        "frontend": "frontend",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"
       }

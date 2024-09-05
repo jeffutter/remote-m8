@@ -1,12 +1,13 @@
 use core::panic;
-use std::{borrow::Cow, io::Write, path::PathBuf, thread, time::Duration};
+use std::{borrow::Cow, io::Write, thread, time::Duration};
 
 use axum::{
     extract::{
         ws::{CloseFrame, Message, WebSocket},
         State, WebSocketUpgrade,
     },
-    response::IntoResponse,
+    http::{header, StatusCode, Uri},
+    response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -18,12 +19,12 @@ use cpal::{
 use flate2::{write::ZlibEncoder, Compression};
 use futures::{SinkExt, StreamExt};
 use log::{debug, info};
+use rust_embed::Embed;
 use serialport::{DataBits, FlowControl, Parity};
 use tokio::sync::{
     broadcast::{Receiver, Sender},
     mpsc,
 };
-use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Parser)]
@@ -50,6 +51,16 @@ struct AppState {
     broadcast_sender: Sender<Message>,
     serial_control_sender: std::sync::mpsc::Sender<WebsocketCmd>,
 }
+
+#[cfg(debug_assertions)]
+#[derive(Embed)]
+#[folder = "frontend/"]
+struct Asset;
+
+#[cfg(not(debug_assertions))]
+#[derive(Embed)]
+#[folder = "frontend/deploy/"]
+struct Asset;
 
 impl Clone for AppState {
     fn clone(&self) -> Self {
@@ -268,14 +279,14 @@ async fn main() {
             serial_control_sender,
         };
 
-        // let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend/deploy");
-        let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend");
-
         // build our application with some routes
         let app = Router::new()
-            .fallback_service(ServeDir::new(assets_dir).append_index_html_on_directories(true))
             .route("/ws", get(ws_handler))
-            .with_state(state);
+            .with_state(state)
+            .route("/", get(index_handler))
+            .route("/index.html", get(index_handler))
+            .route("/*file", get(static_handler))
+            .fallback_service(get(not_found));
         // logging so we can see whats going on
         // .layer(
         //     TraceLayer::new_for_http()
@@ -382,4 +393,43 @@ where
     audio_sender
         .blocking_send(Message::Binary(vec_data))
         .unwrap();
+}
+
+// We use static route matchers ("/" and "/index.html") to serve our home
+// page.
+async fn index_handler() -> impl IntoResponse {
+    static_handler("/index.html".parse::<Uri>().unwrap()).await
+}
+
+// We use a wildcard matcher ("/*file") to match against everything
+// within our defined assets directory. This is the directory on our Asset
+// struct below, where folder = "examples/public/".
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/').to_string();
+
+    StaticFile(path)
+}
+
+// Finally, we use a fallback route for anything that didn't match.
+async fn not_found() -> Html<&'static str> {
+    Html("<h1>404</h1><p>Not Found</p>")
+}
+
+pub struct StaticFile<T>(pub T);
+
+impl<T> IntoResponse for StaticFile<T>
+where
+    T: Into<String>,
+{
+    fn into_response(self) -> Response {
+        let path = self.0.into();
+
+        match Asset::get(path.as_str()) {
+            Some(content) => {
+                let mime = mime_guess::from_path(path).first_or_octet_stream();
+                ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            }
+            None => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
+        }
+    }
 }

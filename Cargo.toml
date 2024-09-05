@@ -13,6 +13,8 @@ flate2 = "1.0.33"
 futures = "0.3.30"
 headers = "0.4.0"
 log = "0.4.22"
+mime_guess = "2.0.5"
+rust-embed = { version = "8.5.0", features = ["compression"] }
 serialport = "4.5.0"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = "0.23.1"
