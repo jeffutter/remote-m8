@@ -16,6 +16,8 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     FromSample, Sample, SampleFormat, SizedSample, Stream,
 };
+#[cfg(target_os = "macos")]
+use cpal::{SampleRate, SupportedStreamConfig};
 use flate2::{write::ZlibEncoder, Compression};
 use futures::{SinkExt, StreamExt};
 use log::{debug, info};
