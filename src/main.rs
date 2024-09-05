@@ -298,6 +298,9 @@ async fn main() {
             .unwrap();
         tracing::debug!("listening on {}", listener.local_addr().unwrap());
         axum::serve(listener, app).await.unwrap();
+
+        audio_handler.join().unwrap();
+        serial_handler.join().unwrap();
     }
 }
 
