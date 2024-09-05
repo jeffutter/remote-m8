@@ -16,8 +16,8 @@
       };
     };
     frontend = {
-      flake = false;
-      url = "git+file:./frontend";
+      flake = true;
+      url = "github:jeffutter/M8WebDisplay?rev=6d0df623deb4bef39c29b2688a63ce06967e4ab2";
     };
   };
 
@@ -39,29 +39,6 @@
         lib = nixpkgs.lib;
         craneLib = crane.mkLib pkgs;
 
-        frontendBuild = pkgs.buildNpmPackage {
-
-          # name of our derivation
-          name = "remote-m8-frontend";
-
-          src = frontend;
-
-          npmDepsHash = "sha256-NdtaaxQ0PcU6iJfxXshvAYg9JwyB3MN6wzeT+ahpaKE=";
-
-          dontNpmBuild = true;
-          nativeBuildInputs = with pkgs; [
-            perl
-            (writeShellScriptBin "git" ''
-              echo "${frontend.rev}"
-            '')
-          ];
-
-          installPhase = ''
-            mkdir $out
-            make DEPLOY_DIR=$out deploy
-          '';
-        };
-
         src = craneLib.cleanCargoSource ./.;
 
         envVars =
@@ -76,14 +53,19 @@
           {
             inherit src;
 
-            nativeBuildInputs = with pkgs; [
-              rust-bin.stable.latest.default
-              cargo
-              clang
-              rust-analyzer
-              rustc
-              pkg-config
-            ];
+            nativeBuildInputs =
+              with pkgs;
+              [
+                rust-bin.stable.latest.default
+                cargo
+                clang
+                rust-analyzer
+                rustc
+                pkg-config
+              ]
+              ++ lib.optionals stdenv.isDarwin [
+                rustPlatform.bindgenHook
+              ];
 
             buildInputs =
               with pkgs;
@@ -94,7 +76,14 @@
                 jack2
                 udev
               ]
-              ++ lib.optionals stdenv.isDarwin [ libiconv ];
+              ++ lib.optionals stdenv.isDarwin (
+                with pkgs.darwin.apple_sdk.frameworks;
+                [
+                  libiconv
+                  AudioUnit
+                  CoreAudio
+                ]
+              );
 
             preConfigurePhases = [ "copyFrontend" ];
 
@@ -102,7 +91,7 @@
               ls -l $TEMPDIR
               ls -l $TEMPDIR/source
               mkdir -p $TEMPDIR/source/frontend
-              cp -R ${frontendBuild} $TEMPDIR/source/frontend/deploy
+              cp -R ${frontend} $TEMPDIR/source/frontend/deploy
             '';
           }
           // envVars
