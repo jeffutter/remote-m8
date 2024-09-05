@@ -13,12 +13,16 @@ use axum::{
 use clap::Parser;
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    SampleRate, SupportedStreamConfig,
+    FromSample, Sample, SampleFormat, SizedSample, Stream,
 };
 use flate2::{write::ZlibEncoder, Compression};
 use futures::{SinkExt, StreamExt};
+use log::{debug, info};
 use serialport::{DataBits, FlowControl, Parity};
-use tokio::sync::broadcast::{Receiver, Sender};
+use tokio::sync::{
+    broadcast::{Receiver, Sender},
+    mpsc,
+};
 use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -57,13 +61,17 @@ impl Clone for AppState {
     }
 }
 
-const BAUD_RATE: u32 = 9600; // 115200
+// const BAUD_RATE: u32 = 9600; // 115200
+const BAUD_RATE: u32 = 115200;
 
-#[repr(u8)]
-enum SerialCmd {
-    Disconnect = 0x44,
-    Enable = 0x45,
-    Reset = 0x52,
+mod serial_cmd {
+    pub const DISCONNECT: u8 = 0x44;
+    pub const ENABLE: u8 = 0x45;
+    pub const RESET: u8 = 0x52;
+}
+
+mod slip {
+    pub const END: u8 = 0xc0;
 }
 
 enum WebsocketCmd {
@@ -86,7 +94,7 @@ async fn main() {
 
     if args.serial.list {
         for p in serialport::available_ports().unwrap() {
-            println!("{} - {:?}", p.port_name, p.port_type);
+            info!("{} - {:?}", p.port_name, p.port_type);
         }
     }
 
@@ -100,54 +108,63 @@ async fn main() {
 
         let audio_handler = thread::spawn(move || {
             let host = cpal::default_host();
-            let m8_audio_input_device = host
+            for device in host.input_devices().into_iter() {
+                for y in device {
+                    info!("Audio Device: {:?}", y.name());
+                }
+            }
+
+            let input_device = host
                 .input_devices()
                 .into_iter()
-                .find_map(|mut d| d.find(|x| x.name().is_ok_and(|name| name == "M8")))
+                .find_map(|mut d| {
+                    d.find(|x| {
+                        x.name().is_ok_and(|name| {
+                            #[cfg(target_os = "macos")]
+                            return name == "M8";
+                            #[cfg(target_os = "linux")]
+                            return name == "iec958:CARD=M8,DEV=0";
+                        })
+                    })
+                })
                 .expect("Couldn't find M8 Audio Device");
+
+            #[cfg(target_os = "macos")]
             let config = SupportedStreamConfig::new(
                 2,
                 SampleRate(44100),
                 cpal::SupportedBufferSize::Range { min: 4, max: 4096 },
                 cpal::SampleFormat::F32,
             );
-            println!("Default input config: {:?}", config);
-            let err_fn = move |err| {
-                eprintln!("an error occurred on stream: {}", err);
-            };
-            let stream = m8_audio_input_device
-                .build_input_stream(
-                    &config.into(),
-                    move |data: &[f32], _: &_| {
-                        // Don't send if all 0's
-                        let (prefix, aligned, suffix) = unsafe { data.align_to::<u128>() };
-                        if prefix.iter().all(|&x| x == 0.0)
-                            && suffix.iter().all(|&x| x == 0.0)
-                            && aligned.iter().all(|&x| x == 0)
-                        {
-                            return;
-                        }
 
-                        let u8_data = unsafe {
-                            std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
-                        };
-                        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-                        encoder.write_all(u8_data).unwrap();
-                        let encoded = encoder.finish().unwrap();
+            #[cfg(target_os = "linux")]
+            let config = input_device
+                .default_input_config()
+                .expect("Could not create default config");
 
-                        let mut vec_data: Vec<u8> = vec![b'A'];
-                        vec_data.extend_from_slice(&encoded);
+            debug!("Input config: {:?}", config);
 
-                        audio_sender
-                            .blocking_send(Message::Binary(vec_data))
-                            .unwrap();
-                    },
-                    err_fn,
-                    None,
-                )
-                .unwrap();
+            let stream = match config.sample_format() {
+                SampleFormat::I8 => run::<i8>(&input_device, &config.into(), audio_sender),
+                SampleFormat::I16 => run::<i16>(&input_device, &config.into(), audio_sender),
+                SampleFormat::I32 => run::<i32>(&input_device, &config.into(), audio_sender),
+                SampleFormat::I64 => run::<i64>(&input_device, &config.into(), audio_sender),
+                SampleFormat::U8 => run::<u8>(&input_device, &config.into(), audio_sender),
+                SampleFormat::U16 => run::<u16>(&input_device, &config.into(), audio_sender),
+                SampleFormat::U32 => run::<u32>(&input_device, &config.into(), audio_sender),
+                SampleFormat::U64 => run::<u64>(&input_device, &config.into(), audio_sender),
+                SampleFormat::F32 => run::<f32>(&input_device, &config.into(), audio_sender),
+                SampleFormat::F64 => run::<f64>(&input_device, &config.into(), audio_sender),
+                sample_format => panic!("Unsupported sample format '{sample_format}'"),
+            }
+            .unwrap();
+
+            info!("Starting Audio Stream");
 
             stream.play().unwrap();
+
+            thread::park();
+            info!("Audio Stream Done");
         });
 
         let serial_handler = thread::spawn(move || {
@@ -156,27 +173,26 @@ async fn main() {
                 .parity(Parity::None)
                 .stop_bits(serialport::StopBits::One)
                 .flow_control(FlowControl::None)
+                .timeout(Duration::from_millis(10))
                 .open()
                 .unwrap();
 
-            sp.write_all(&[SerialCmd::Disconnect as u8]).unwrap();
+            sp.write_all(&[serial_cmd::DISCONNECT]).unwrap();
             std::thread::sleep(Duration::from_millis(50));
-            sp.write_all(&[SerialCmd::Enable as u8, SerialCmd::Reset as u8])
+            sp.write_all(&[serial_cmd::ENABLE, serial_cmd::RESET])
                 .unwrap();
-            println!("Serial Init");
+            debug!("Serial Init");
 
             let mut buffer = [0; 1024];
             // let mut buffer = [0; 4096];
             let mut work_buffer: Vec<u8> = Vec::new();
             loop {
                 match sp.read(&mut buffer[..]) {
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::TimedOut {
-                            //
-                        } else {
-                            panic!("Unknown Serial Error: {}", e);
-                        }
-                    }
+                    Err(e) => match e.kind() {
+                        std::io::ErrorKind::TimedOut => (),
+                        std::io::ErrorKind::Interrupted => (),
+                        _ => panic!("Unknown Serial Error: {}", e),
+                    },
                     Ok(n) => {
                         if n == 0 {
                             serial_sender
@@ -189,51 +205,42 @@ async fn main() {
                         }
                         work_buffer.extend(&buffer[..n]);
 
-                        let mut split_at: Option<usize> = None;
-                        let mut it = work_buffer.iter().enumerate().peekable();
-                        while let Some((idx, e)) = it.next() {
-                            match (e, it.peek()) {
-                                (0xC0, None) => {
-                                    split_at = Some(idx);
+                        let last_end_idx =
+                            work_buffer.iter().enumerate().rev().find_map(|(idx, e)| {
+                                if *e == slip::END {
+                                    return Some(idx);
                                 }
-                                (_e, None) => {
-                                    break;
-                                }
-                                (0xC0, _) => {
-                                    split_at = Some(idx);
-                                    continue;
-                                }
-                                (_, _) => continue,
-                            }
-                        }
+                                None
+                            });
 
-                        match split_at {
-                            None => {
-                                continue;
-                            }
-                            Some(idx) => {
-                                let tmp_buffer = work_buffer.clone();
-                                let (to_send, rest) = tmp_buffer.split_at(idx + 1);
-                                work_buffer = rest.to_vec();
-                                let mut vec_data: Vec<u8> = vec![b'S'];
-                                vec_data.extend_from_slice(to_send);
-                                serial_sender
-                                    .blocking_send(Message::Binary(vec_data.to_vec()))
-                                    .unwrap();
-                            }
+                        if let Some(idx) = last_end_idx {
+                            let tmp_buffer = work_buffer.clone();
+                            let (to_send, rest) = tmp_buffer.split_at(idx + 1);
+                            work_buffer = rest.to_vec();
+                            let mut vec_data: Vec<u8> = vec![b'S'];
+                            vec_data.extend_from_slice(to_send);
+                            serial_sender
+                                .blocking_send(Message::Binary(vec_data.to_vec()))
+                                .unwrap();
                         }
                     }
                 }
 
                 match serial_control_receiver.recv_timeout(Duration::from_millis(10)) {
                     Ok(WebsocketCmd::Connect) => {
-                        sp.write_all(&[SerialCmd::Enable as u8, SerialCmd::Reset as u8])
+                        sp.write_all(&[serial_cmd::ENABLE, serial_cmd::RESET])
                             .unwrap();
                     }
-                    Ok(WebsocketCmd::WsMessage(msg)) => {
-                        sp.write_all(&msg).unwrap();
-                    }
-                    Err(_timeout) => {
+                    Ok(WebsocketCmd::WsMessage(msg)) => match sp.write_all(&msg) {
+                        Ok(()) => (),
+                        Err(e) => match e.kind() {
+                            std::io::ErrorKind::TimedOut => {
+                                panic!("Timed out writing message: {:?}", msg)
+                            }
+                            _ => panic!("Couldn't write message: {:?}. Error: {:?}", msg, e),
+                        },
+                    },
+                    Err(_read_timeout) => {
                         //
                     }
                 }
@@ -315,6 +322,7 @@ async fn handle_socket(socket: WebSocket, mut state: AppState) {
                     Some(Ok(Message::Binary(bytes))) => {
                         state.serial_control_sender.send(WebsocketCmd::WsMessage(bytes)).unwrap()
                     }
+                    Some(Ok(Message::Close(_))) => break,
                     Some(Ok(msg)) => todo!("Unknown WS Message: {:?}", msg)
                 }
             }
@@ -322,4 +330,56 @@ async fn handle_socket(socket: WebSocket, mut state: AppState) {
     }
 
     println!("Websocket context destroyed");
+}
+
+pub fn run<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    audio_sender: mpsc::Sender<Message>,
+) -> Result<Stream, anyhow::Error>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
+
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| write_data(data, audio_sender.clone()),
+        err_fn,
+        None,
+    )?;
+
+    Ok(stream)
+}
+
+fn write_data<T>(data: &[T], audio_sender: mpsc::Sender<Message>)
+where
+    T: Sample,
+    f32: Sample + FromSample<T>,
+{
+    let (prefix, aligned, suffix) = unsafe { data.align_to::<u128>() };
+    if prefix.iter().all(|&x| f32::from_sample(x) == 0.0)
+        && suffix.iter().all(|&x| f32::from_sample(x) == 0.0)
+        && aligned.iter().all(|&x| x == 0)
+    {
+        return;
+    }
+
+    let data = data
+        .iter()
+        .map(|x| f32::from_sample(*x))
+        .collect::<Vec<f32>>();
+
+    let u8_data = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(u8_data).unwrap();
+    let encoded = encoder.finish().unwrap();
+
+    let mut vec_data: Vec<u8> = vec![b'A'];
+    vec_data.extend_from_slice(&encoded);
+
+    audio_sender
+        .blocking_send(Message::Binary(vec_data))
+        .unwrap();
 }

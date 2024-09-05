@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.86"
 axum = { version = "0.7.5", features = ["tokio", "ws"] }
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
 clap = { version = "4.5.16", features = ["derive"] }
-cpal = "0.15.3"
+cpal = { version = "0.15.3" }
 flate2 = "1.0.33"
 futures = "0.3.30"
 headers = "0.4.0"
+log = "0.4.22"
 serialport = "4.5.0"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = "0.23.1"
@@ -19,3 +21,8 @@ tower-http = { version = "0.5.2", features = ["fs", "trace"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tungstenite = "0.24.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"
