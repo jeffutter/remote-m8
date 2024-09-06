@@ -71,7 +71,13 @@
                 jack2
                 udev
               ]
-              ++ lib.optionals stdenv.isDarwin [ libiconv ];
+              ++ lib.optionals stdenv.isDarwin (
+                with pkgs.darwin.apple_sdk.frameworks;
+                [
+                  libiconv
+                  CoreAudio
+                ]
+              );
 
             preConfigurePhases = [ "copyFrontend" ];
 
