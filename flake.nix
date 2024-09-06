@@ -75,6 +75,7 @@
                 with pkgs.darwin.apple_sdk.frameworks;
                 [
                   libiconv
+                  AudioUnit
                   CoreAudio
                 ]
               );
