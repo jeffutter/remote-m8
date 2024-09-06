@@ -15,9 +15,10 @@ headers = "0.4.0"
 log = "0.4.22"
 mime_guess = "2.0.5"
 rust-embed = { version = "8.5.0", features = ["compression"] }
-serialport = "4.5.0"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync", "time"] }
+tokio-serial = "5.4.4"
 tokio-tungstenite = "0.23.1"
+tokio-util = { version = "0.7.12", features = ["codec"] }
 tower = "0.5.0"
 tower-http = { version = "0.5.2", features = ["fs", "trace"] }
 tracing = "0.1.40"

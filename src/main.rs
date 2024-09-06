@@ -1,7 +1,7 @@
 mod serial;
 
 use core::panic;
-use std::{io::Write, thread};
+use std::{io::Write, sync::Arc, thread};
 
 use axum::{
     extract::{
@@ -21,18 +21,20 @@ use cpal::{
 #[cfg(target_os = "macos")]
 use cpal::{SampleRate, SupportedStreamConfig};
 use flate2::{write::ZlibEncoder, Compression};
-use futures::{SinkExt, StreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use log::{debug, info};
 use rust_embed::Embed;
+use serial::SLIPCodec;
 use tokio::sync::{
     broadcast::{Receiver, Sender},
-    mpsc,
+    mpsc, Mutex,
 };
+use tokio_util::codec::Framed;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Parser)]
 #[group(required = true, multiple = false)]
-struct Serial {
+struct SerialArgs {
     #[arg(short = 'l')]
     list: bool,
 
@@ -43,7 +45,7 @@ struct Serial {
 #[derive(Debug, Parser)]
 struct Args {
     #[command(flatten)]
-    serial: Serial,
+    serial: SerialArgs,
 
     #[arg(short = 'p', default_value = "3000")]
     port: usize,
@@ -52,7 +54,7 @@ struct Args {
 struct AppState {
     broadcast_receiver: Receiver<Message>,
     broadcast_sender: Sender<Message>,
-    serial_control_sender: std::sync::mpsc::Sender<WebsocketCmd>,
+    serial_sink: Arc<Mutex<SplitSink<Framed<tokio_serial::SerialStream, SLIPCodec>, WebsocketCmd>>>,
 }
 
 #[cfg(debug_assertions)]
@@ -70,7 +72,7 @@ impl Clone for AppState {
         Self {
             broadcast_sender: self.broadcast_sender.clone(),
             broadcast_receiver: self.broadcast_sender.subscribe(),
-            serial_control_sender: self.serial_control_sender.clone(),
+            serial_sink: self.serial_sink.clone(),
         }
     }
 }
@@ -94,7 +96,7 @@ async fn main() {
         .init();
 
     if args.serial.list {
-        for p in serialport::available_ports().unwrap() {
+        for p in tokio_serial::available_ports().unwrap() {
             info!("{} - {:?}", p.port_name, p.port_type);
         }
     }
@@ -104,8 +106,7 @@ async fn main() {
 
         let (audio_sender, mut audio_receiver) = tokio::sync::mpsc::channel::<Message>(8);
 
-        let (serial_handler, mut serial_receiver, serial_control_sender) =
-            serial::spawn(serial_path);
+        let (serial_sink, mut serial_stream) = serial::Serial::new(serial_path).unwrap().stream();
 
         let audio_handler = thread::spawn(move || {
             let host = cpal::default_host();
@@ -172,8 +173,15 @@ async fn main() {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    Some(msg) = serial_receiver.recv() => {
-                        broadcast_sender1.send(msg).unwrap();
+                    Some(data) = serial_stream.next() => {
+                        match data {
+                            Ok(data) => {
+                                let mut prefix_data = vec![b'S'];
+                                prefix_data.extend_from_slice(&data);
+                                broadcast_sender1.send(Message::Binary(prefix_data)).unwrap();
+                            },
+                            Err(_) => todo!(),
+                        }
                     }
                     Some(msg) = audio_receiver.recv() => {
                         broadcast_sender1.send(msg).unwrap();
@@ -186,7 +194,7 @@ async fn main() {
         let state = AppState {
             broadcast_receiver,
             broadcast_sender,
-            serial_control_sender,
+            serial_sink: Arc::new(Mutex::new(serial_sink)),
         };
 
         // build our application with some routes
@@ -210,7 +218,6 @@ async fn main() {
         axum::serve(listener, app).await.unwrap();
 
         audio_handler.join().unwrap();
-        serial_handler.join().unwrap();
     }
 }
 
@@ -222,8 +229,11 @@ async fn handle_socket(socket: WebSocket, mut state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
     state
-        .serial_control_sender
+        .serial_sink
+        .lock()
+        .await
         .send(WebsocketCmd::Connect)
+        .await
         .unwrap();
 
     loop {
@@ -244,7 +254,7 @@ async fn handle_socket(socket: WebSocket, mut state: AppState) {
                         break;
                     },
                     Some(Ok(Message::Binary(bytes))) => {
-                        state.serial_control_sender.send(WebsocketCmd::WsMessage(bytes)).unwrap()
+                        state.serial_sink.lock().await.send(WebsocketCmd::WsMessage(bytes)).await.unwrap();
                     }
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(msg)) => todo!("Unknown WS Message: {:?}", msg)
