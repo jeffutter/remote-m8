@@ -59,15 +59,16 @@
       "locked": {
         "lastModified": 1725593431,
         "narHash": "sha256-CS6+Gbb/A2bc9g8l8J0jcVxhVoBveuUmdalkUUTzkAQ=",
-        "ref": "refs/heads/remote",
+        "owner": "jeffutter",
+        "repo": "M8WebDisplay",
         "rev": "6d0df623deb4bef39c29b2688a63ce06967e4ab2",
-        "revCount": 143,
-        "type": "git",
-        "url": "file:./frontend"
+        "type": "github"
       },
       "original": {
-        "type": "git",
-        "url": "file:./frontend"
+        "owner": "jeffutter",
+        "repo": "M8WebDisplay",
+        "rev": "6d0df623deb4bef39c29b2688a63ce06967e4ab2",
+        "type": "github"
       }
     },
     "nixpkgs": {

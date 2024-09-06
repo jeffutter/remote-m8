@@ -17,7 +17,7 @@
     };
     frontend = {
       flake = true;
-      url = "git+file:./frontend";
+      url = "github:jeffutter/M8WebDisplay?rev=6d0df623deb4bef39c29b2688a63ce06967e4ab2";
     };
   };
 

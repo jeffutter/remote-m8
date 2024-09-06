@@ -95,43 +95,6 @@ jobs:
             shasum -a 256 $RELEASE_NAME.tar.gz > $RELEASE_NAME.sha256
           fi
 
-      - name: Releasing assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/${{ matrix.job.target }}/release/remote-m8-*.tar.gz
-            target/${{ matrix.job.target }}/release/remote-m8-*.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish_to_nix:
-    name: Publishing for ${{ matrix.job.os }}-${{ matrix.job.architecture }}
-    runs-on: ${{ matrix.job.os }}
-    strategy:
-      matrix:
-        rust: [stable]
-        job:
-          - os: ubuntu-latest
-            os-name: linux
-            target: x86_64-unknown-linux-gnu
-            architecture: x86_64
-            deb_architecture: amd64
-            binary-postfix: ""
-            use-cross: false
-          - os: macos-latest
-            os-name: macos
-            target: aarch64-apple-darwin
-            architecture: aarch64
-            deb_architecture: aarch64
-            binary-postfix: ""
-            use-cross: false
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: true
-
       - uses: cachix/install-nix-action@V27
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
@@ -141,39 +104,14 @@ jobs:
           name: jeffutter
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
-      - name: Debug
-        run: |
-          pwd
-          echo "Git Status"
-          git status
-          echo "ls -la"
-          ls -la
-
-      - name: Fix Submodule
-        run: |
-          git submodule status
-          git submodule init
-          git submodule update
-          git submodule status
-
-      - name: Debug
-        run: |
-          pwd
-          echo "Git Status"
-          git status
-          echo "ls -la"
-          ls -la
-          cd frontend
-          echo "frontend Git Status"
-          git status
-          echo "frontend ls -la"
-          ls -la
-          echo "frontend git log"
-          git log
-
-      - run: |
-          pwd
-          ls
-          nix build
-
+      - run: nix build
       - run: nix flake check
+
+      - name: Releasing assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/${{ matrix.job.target }}/release/remote-m8-*.tar.gz
+            target/${{ matrix.job.target }}/release/remote-m8-*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
