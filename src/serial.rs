@@ -1,15 +1,12 @@
 use std::{io::Write, time::Duration};
 
 use anyhow::Result;
-use futures::{
-    stream::{SplitSink, SplitStream},
-    StreamExt,
-};
+use futures::StreamExt;
 use log::debug;
 use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, SerialStream, StopBits};
 use tokio_util::{
     bytes::BytesMut,
-    codec::{Decoder, Encoder, Framed},
+    codec::{Decoder, Encoder},
 };
 
 use crate::WebsocketCmd;
@@ -84,11 +81,10 @@ impl Serial {
     pub fn stream(
         self,
     ) -> (
-        SplitSink<Framed<SerialStream, SLIPCodec>, WebsocketCmd>,
-        SplitStream<Framed<SerialStream, SLIPCodec>>,
+        impl futures::sink::Sink<WebsocketCmd, Error = std::io::Error>,
+        impl futures::stream::Stream<Item = Result<Vec<u8>, std::io::Error>>,
     ) {
         let serial_codec = SLIPCodec {}.framed(self.stream);
         serial_codec.split()
-        // let (serial_sink, mut serial_stream) = serial_codec.split();
     }
 }

@@ -2,7 +2,7 @@ mod audio;
 mod serial;
 
 use core::panic;
-use std::{io::Write, sync::Arc, thread};
+use std::{io::Write, pin::Pin, sync::Arc, thread};
 
 use axum::{
     extract::{
@@ -16,15 +16,13 @@ use axum::{
 };
 use clap::Parser;
 use flate2::{write::ZlibEncoder, Compression};
-use futures::{stream::SplitSink, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use log::info;
 use rust_embed::Embed;
-use serial::SLIPCodec;
 use tokio::sync::{
     broadcast::{Receiver, Sender},
     Mutex,
 };
-use tokio_util::codec::Framed;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Parser)]
@@ -46,10 +44,13 @@ struct Args {
     port: usize,
 }
 
+type WebsocketCmdStream =
+    Pin<Box<dyn futures::sink::Sink<WebsocketCmd, Error = std::io::Error> + Send>>;
+
 struct AppState {
     broadcast_receiver: Receiver<Message>,
     broadcast_sender: Sender<Message>,
-    serial_sink: Arc<Mutex<SplitSink<Framed<tokio_serial::SerialStream, SLIPCodec>, WebsocketCmd>>>,
+    serial_sink: Arc<Mutex<WebsocketCmdStream>>,
 }
 
 #[cfg(debug_assertions)]
@@ -134,7 +135,7 @@ async fn main() {
         let state = AppState {
             broadcast_receiver,
             broadcast_sender,
-            serial_sink: Arc::new(Mutex::new(serial_sink)),
+            serial_sink: Arc::new(Mutex::new(Box::pin(serial_sink))),
         };
 
         // build our application with some routes
