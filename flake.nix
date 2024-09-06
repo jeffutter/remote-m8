@@ -16,7 +16,7 @@
       };
     };
     frontend = {
-      flake = false;
+      flake = true;
       url = "git+file:./frontend";
     };
   };
@@ -38,29 +38,6 @@
 
         lib = nixpkgs.lib;
         craneLib = crane.mkLib pkgs;
-
-        frontendBuild = pkgs.buildNpmPackage {
-
-          # name of our derivation
-          name = "remote-m8-frontend";
-
-          src = frontend;
-
-          npmDepsHash = "sha256-NdtaaxQ0PcU6iJfxXshvAYg9JwyB3MN6wzeT+ahpaKE=";
-
-          dontNpmBuild = true;
-          nativeBuildInputs = with pkgs; [
-            perl
-            (writeShellScriptBin "git" ''
-              echo "${frontend.rev}"
-            '')
-          ];
-
-          installPhase = ''
-            mkdir $out
-            make DEPLOY_DIR=$out deploy
-          '';
-        };
 
         src = craneLib.cleanCargoSource ./.;
 
@@ -102,7 +79,7 @@
               ls -l $TEMPDIR
               ls -l $TEMPDIR/source
               mkdir -p $TEMPDIR/source/frontend
-              cp -R ${frontendBuild} $TEMPDIR/source/frontend/deploy
+              cp -R ${frontend} $TEMPDIR/source/frontend/deploy
             '';
           }
           // envVars
