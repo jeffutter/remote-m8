@@ -47,6 +47,29 @@
             RUSTFLAGS = "-Clinker=clang -Clink-arg=--ld-path=${pkgs.mold}/bin/mold";
             LD_LIBRARY_PATH = "${pkgs.alsa-lib}/lib;${pkgs.udev}/lib;${pkgs.pipewire}/lib;${pkgs.jack2}/lib";
             ALSA_PLUGIN_DIR = "${pkgs.pipewire}/lib/alsa-lib";
+          })
+          // (lib.attrsets.optionalAttrs pkgs.stdenv.isDarwin {
+            # The coreaudio-sys crate is configured to look for things in whatever the
+            # output of `xcrun --sdk macosx --show-sdk-path` is. However, this does not
+            # always contain the right frameworks, and it uses system versions instead of
+            # what we control via Nix. Instead of having to run a lot of extra scripts
+            # to set our systems up to build, we can just create a SDK directory with
+            # the same layout as the `MacOSX{version}.sdk` that XCode produces.
+            #
+            # TODO: I'm not 100% confident that this being blank won't cause issues for
+            # Nix-on-Linux development. It may be sufficient to use the pkgs.symlinkJoin
+            # above regardless of system! That'd set us up for cross-compilation as well.
+            COREAUDIO_SDK_PATH = pkgs.symlinkJoin {
+              name = "sdk";
+              paths = with pkgs.darwin.apple_sdk.frameworks; [
+                AudioUnit
+                CoreAudio
+              ];
+              postBuild = ''
+                mkdir -p $out/System
+                mv $out/Library $out/System
+              '';
+            };
           });
 
         commonArgs = (
