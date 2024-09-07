@@ -3,11 +3,10 @@ mod serial;
 mod server;
 
 use core::panic;
-use std::{io::Write, pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc};
 
 use axum::extract::ws::Message;
 use clap::Parser;
-use flate2::{write::ZlibEncoder, Compression};
 use futures::StreamExt;
 use log::info;
 use tokio::sync::{
@@ -83,10 +82,11 @@ async fn main() {
         let (serial_sink, serial_stream) = serial::Serial::new(serial_path).unwrap().stream();
         let audio_receiver = audio::run_audio();
 
-        let mut audio_receiver = audio_receiver.map(|data| {
-            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(&data).unwrap();
-            let encoded = encoder.finish().unwrap();
+        let mut encoder =
+            opus::Encoder::new(48000, opus::Channels::Stereo, opus::Application::Audio).unwrap();
+        let mut audio_receiver = audio_receiver.map(move |data| {
+            let (_prefix, data, _suffix) = unsafe { data.align_to::<f32>() };
+            let encoded = encoder.encode_vec_float(data, 960).unwrap();
 
             let mut vec_data: Vec<u8> = vec![b'A'];
             vec_data.extend_from_slice(&encoded);

@@ -45,7 +45,7 @@
           { }
           // (lib.attrsets.optionalAttrs pkgs.stdenv.isLinux {
             RUSTFLAGS = "-Clinker=clang -Clink-arg=--ld-path=${pkgs.mold}/bin/mold";
-            LD_LIBRARY_PATH = "${pkgs.alsa-lib}/lib;${pkgs.udev}/lib;${pkgs.pipewire}/lib;${pkgs.jack2}/lib";
+            LD_LIBRARY_PATH = "${pkgs.alsa-lib}/lib;${pkgs.udev}/lib;${pkgs.pipewire}/lib;${pkgs.jack2}/lib;${pkgs.libopus}/lib";
             ALSA_PLUGIN_DIR = "${pkgs.pipewire}/lib/alsa-lib";
           })
           // (lib.attrsets.optionalAttrs pkgs.stdenv.isDarwin {
@@ -85,6 +85,8 @@
                 rust-analyzer
                 rustc
                 pkg-config
+                cmake
+                libopus
               ]
               ++ lib.optionals stdenv.isDarwin [
                 rustPlatform.bindgenHook

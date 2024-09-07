@@ -9,11 +9,13 @@ axum = { version = "0.7.5", features = ["tokio", "ws"] }
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
 clap = { version = "4.5.16", features = ["derive"] }
 cpal = { version = "0.15.3" }
-flate2 = "1.0.33"
 futures = "0.3.30"
 headers = "0.4.0"
+itertools = "0.13.0"
 log = "0.4.22"
 mime_guess = "2.0.5"
+opus = "0.3.0"
+rubato = "0.15.0"
 rust-embed = { version = "8.5.0", features = ["compression"] }
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync", "time"] }
 tokio-serial = "5.4.4"
