@@ -44,7 +44,8 @@
         envVars =
           { }
           // (lib.attrsets.optionalAttrs pkgs.stdenv.isLinux {
-            RUSTFLAGS = "-Clinker=clang -Clink-arg=--ld-path=${pkgs.mold}/bin/mold";
+            # mold breaks WASM
+            # RUSTFLAGS = "-Clinker=clang -Clink-arg=--ld-path=${pkgs.mold}/bin/mold";
             LD_LIBRARY_PATH = "${pkgs.alsa-lib}/lib;${pkgs.udev}/lib;${pkgs.pipewire}/lib;${pkgs.jack2}/lib;${pkgs.libopus}/lib";
             ALSA_PLUGIN_DIR = "${pkgs.pipewire}/lib/alsa-lib";
           })
@@ -79,7 +80,13 @@
             nativeBuildInputs =
               with pkgs;
               [
-                rust-bin.stable.latest.default
+                (rust-bin.stable.latest.default.override {
+                  extensions = [
+                    "rust-src"
+                    "rust-analyzer"
+                  ];
+                  targets = [ "wasm32-unknown-unknown" ];
+                })
                 cargo
                 clang
                 rust-analyzer
@@ -146,7 +153,13 @@
         };
 
         devShells.default = mkShell (
-          commonArgs // { packages = [ ] ++ lib.optionals stdenv.isLinux [ ]; } // envVars
+          commonArgs
+          // {
+            packages = [
+              trunk
+            ] ++ lib.optionals stdenv.isLinux [ ];
+          }
+          // envVars
         );
 
         formatter = nixpkgs-fmt;
