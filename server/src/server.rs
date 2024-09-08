@@ -16,12 +16,12 @@ use crate::{AppState, WebsocketCmd};
 
 #[cfg(debug_assertions)]
 #[derive(Embed)]
-#[folder = "frontend/"]
+#[folder = "../frontend/"]
 struct Asset;
 
 #[cfg(not(debug_assertions))]
 #[derive(Embed)]
-#[folder = "frontend/deploy/"]
+#[folder = "../frontend/deploy/"]
 struct Asset;
 
 pub async fn run(state: AppState, port: usize) -> Result<()> {
