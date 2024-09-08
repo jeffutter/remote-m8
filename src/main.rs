@@ -85,8 +85,7 @@ async fn main() {
         let mut encoder =
             opus::Encoder::new(48000, opus::Channels::Stereo, opus::Application::Audio).unwrap();
         let mut audio_receiver = audio_receiver.map(move |data| {
-            let (_prefix, data, _suffix) = unsafe { data.align_to::<f32>() };
-            let encoded = encoder.encode_vec_float(data, 960).unwrap();
+            let encoded = encoder.encode_vec_float(&data, 960).unwrap();
 
             let mut vec_data: Vec<u8> = vec![b'A'];
             vec_data.extend_from_slice(&encoded);

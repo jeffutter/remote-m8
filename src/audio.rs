@@ -11,7 +11,7 @@ use itertools::interleave;
 use log::{debug, info};
 use rubato::VecResampler;
 
-pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<u8>> {
+pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
     let (audio_sender, audio_receiver) = mpsc::channel(8);
     let buffer: VecDeque<f32> = VecDeque::new();
 
@@ -155,7 +155,7 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<u8>> {
 pub fn run<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    audio_sender: mpsc::Sender<Vec<u8>>,
+    audio_sender: mpsc::Sender<Vec<f32>>,
     mut buffer: VecDeque<f32>,
     mut resampler: impl VecResampler<f32> + 'static,
     mut resampler_output_buffers: Vec<Vec<f32>>,
@@ -186,7 +186,7 @@ where
 
 fn write_data<T>(
     data: &[T],
-    mut audio_sender: mpsc::Sender<Vec<u8>>,
+    mut audio_sender: mpsc::Sender<Vec<f32>>,
     buffer: &mut VecDeque<f32>,
     resampler: &mut impl VecResampler<f32>,
     resampler_output_buffers: &mut [Vec<f32>],
@@ -247,10 +247,6 @@ fn write_data<T>(
         .cloned()
         .collect::<Vec<f32>>();
 
-        // Reinterpret f32s as u8s
-        let u8_data =
-            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
-
-        audio_sender.try_send(u8_data.to_vec()).unwrap();
+        audio_sender.try_send(data).unwrap();
     }
 }
