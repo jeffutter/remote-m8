@@ -15,13 +15,6 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<u8>> {
     let (audio_sender, audio_receiver) = mpsc::channel(8);
     let buffer: VecDeque<f32> = VecDeque::new();
 
-    let params = rubato::SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        interpolation: rubato::SincInterpolationType::Linear,
-        oversampling_factor: 256,
-        window: rubato::WindowFunction::BlackmanHarris2,
-    };
     let host = cpal::default_host();
 
     for device in host.input_devices().into_iter() {
@@ -60,14 +53,8 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<u8>> {
 
     debug!("Input config: {:?}", config);
 
-    let resampler = rubato::SincFixedOut::<f32>::new(
-        48000f64 / config.sample_rate().0 as f64,
-        2.0,
-        params,
-        960,
-        2,
-    )
-    .unwrap();
+    let resampler =
+        rubato::FftFixedOut::<f32>::new(config.sample_rate().0 as usize, 48000, 960, 2, 2).unwrap();
     let resampler_output_buffers = resampler.output_buffer_allocate(true);
 
     std::thread::spawn(move || {
