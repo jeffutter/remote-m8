@@ -11,9 +11,12 @@ use itertools::interleave;
 use log::{debug, info};
 use rubato::VecResampler;
 
+const SAMPLE_RATE: usize = 48000;
+const NUM_CHANNELS: usize = 2;
+const OPUS_CHUNK_SIZE: usize = 960;
+
 pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
     let (audio_sender, audio_receiver) = mpsc::channel(8);
-    let buffer: VecDeque<f32> = VecDeque::new();
 
     let host = cpal::default_host();
 
@@ -53,8 +56,14 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
 
     debug!("Input config: {:?}", config);
 
-    let resampler =
-        rubato::FftFixedOut::<f32>::new(config.sample_rate().0 as usize, 48000, 960, 2, 2).unwrap();
+    let resampler = rubato::FftFixedOut::<f32>::new(
+        config.sample_rate().0 as usize,
+        SAMPLE_RATE,
+        OPUS_CHUNK_SIZE,
+        2,
+        NUM_CHANNELS,
+    )
+    .unwrap();
     let resampler_output_buffers = resampler.output_buffer_allocate(true);
 
     std::thread::spawn(move || {
@@ -63,7 +72,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -71,7 +84,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -79,7 +96,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -87,7 +108,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -95,7 +120,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -103,7 +132,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -111,7 +144,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -119,7 +156,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -127,7 +168,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -135,7 +180,11 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
                 &input_device,
                 &config.into(),
                 audio_sender,
-                buffer,
+                (
+                    VecDeque::new(),
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                    [0.0f32; OPUS_CHUNK_SIZE],
+                ),
                 resampler,
                 resampler_output_buffers,
             ),
@@ -156,12 +205,13 @@ pub fn run<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     audio_sender: mpsc::Sender<Vec<f32>>,
-    mut buffer: VecDeque<f32>,
+    //TODO: buffer sizes are wrong depending on sample rate
+    mut buffer: (VecDeque<T>, [f32; OPUS_CHUNK_SIZE], [f32; OPUS_CHUNK_SIZE]),
     mut resampler: impl VecResampler<f32> + 'static,
     mut resampler_output_buffers: Vec<Vec<f32>>,
 ) -> Result<Stream, anyhow::Error>
 where
-    T: SizedSample,
+    T: SizedSample + Send + 'static,
     f32: FromSample<T>,
 {
     let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
@@ -187,7 +237,12 @@ where
 fn write_data<T>(
     data: &[T],
     mut audio_sender: mpsc::Sender<Vec<f32>>,
-    buffer: &mut VecDeque<f32>,
+    //TODO: buffer sizes are wrong depending on sample rate
+    (sample_buffer, left_buffer, right_buffer): &mut (
+        VecDeque<T>,
+        [f32; OPUS_CHUNK_SIZE],
+        [f32; OPUS_CHUNK_SIZE],
+    ),
     resampler: &mut impl VecResampler<f32>,
     resampler_output_buffers: &mut [Vec<f32>],
 ) where
@@ -203,41 +258,37 @@ fn write_data<T>(
         return;
     }
 
-    // Convert every sample to f32
-    let data = data
-        .iter()
-        .map(|x| f32::from_sample(*x))
-        .collect::<Vec<f32>>();
+    // Add to existing samples
+    sample_buffer.extend(data);
 
-    buffer.extend(data);
+    // For every appropriate length chunk
+    while sample_buffer.len() >= resampler.input_frames_next() * 2 {
+        let samples_per_channel = resampler.input_frames_next();
+        let all_samples = samples_per_channel * NUM_CHANNELS;
+        //TODO: Skip resampling if not necessary
 
-    while buffer.len() >= resampler.input_frames_next() * 2 {
-        let buffer2 = buffer.split_off(resampler.input_frames_next() * 2);
-        let data = buffer.iter().enumerate();
-        let chan1 = data
-            .clone()
-            .filter_map(|(x, v)| {
-                if x % 2 == 1 {
-                    return Some(*v);
-                }
-                None
-            })
-            .collect::<Vec<f32>>();
+        // Split left/right and convert to f32s
+        let mut i = 0;
+        for (x, v) in sample_buffer.drain(..all_samples).enumerate() {
+            let v = f32::from_sample(v);
+            if x % 2 == 0 {
+                left_buffer[i] = v;
+            } else {
+                right_buffer[i] = v;
+                i += 1;
+            }
+        }
 
-        let chan2 = data
-            .filter_map(|(x, v)| {
-                if x % 2 != 1 {
-                    return Some(*v);
-                }
-                None
-            })
-            .collect::<Vec<f32>>();
-
-        buffer.clear();
-        buffer.extend(buffer2);
-
+        // Resample
         let (_in_len, out_len) = resampler
-            .process_into_buffer(&[chan1, chan2], resampler_output_buffers, None)
+            .process_into_buffer(
+                &[
+                    left_buffer[..samples_per_channel].to_vec(),
+                    right_buffer[..samples_per_channel].to_vec(),
+                ],
+                resampler_output_buffers,
+                None,
+            )
             .unwrap();
 
         let data = interleave(
