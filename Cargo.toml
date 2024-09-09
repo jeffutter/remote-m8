@@ -7,7 +7,6 @@ edition = "2021"
 anyhow = "1.0.86"
 axum = { version = "0.7.5", features = ["tokio", "ws"] }
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
-bytemuck = "1.18.0"
 clap = { version = "4.5.16", features = ["derive"] }
 cpal = { version = "0.15.3" }
 futures = "0.3.30"
