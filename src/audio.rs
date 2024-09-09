@@ -7,13 +7,116 @@ use cpal::{
 #[cfg(target_os = "macos")]
 use cpal::{SampleRate, SupportedStreamConfig};
 use futures::channel::mpsc;
-use itertools::interleave;
+use itertools::{interleave, Itertools};
 use log::{debug, info};
-use rubato::VecResampler;
+use rubato::VecResampler as _;
 
 const SAMPLE_RATE: usize = 48000;
 const NUM_CHANNELS: usize = 2;
 const OPUS_CHUNK_SIZE: usize = 960;
+
+struct Resampler<T> {
+    resampler: rubato::FftFixedOut<f32>,
+    src_rate: usize,
+    dest_rate: usize,
+    output_buffers: Vec<Vec<f32>>,
+    //TODO: buffer sizes are wrong depending on sample rate
+    left_buffer: [f32; 1024],
+    right_buffer: [f32; 1024],
+    input_buffer: VecDeque<T>,
+    src_samples_per_chunk: usize,
+    src_samples_per_channel: usize,
+}
+
+impl<T> Resampler<T>
+where
+    T: Sample,
+    f32: Sample + FromSample<T>,
+{
+    fn new(src_rate: usize, dest_rate: usize) -> Self {
+        let resampler =
+            rubato::FftFixedOut::<f32>::new(src_rate, dest_rate, OPUS_CHUNK_SIZE, 2, NUM_CHANNELS)
+                .unwrap();
+        let output_buffers = resampler.output_buffer_allocate(true);
+        let src_samples_per_channel =
+            ((OPUS_CHUNK_SIZE as f32 / dest_rate as f32) * src_rate as f32) as usize;
+        let src_samples_per_chunk = src_samples_per_channel * NUM_CHANNELS;
+
+        Self {
+            resampler,
+            src_rate,
+            dest_rate,
+            output_buffers,
+            left_buffer: [0.0; 1024],
+            right_buffer: [0.0; 1024],
+            input_buffer: VecDeque::new(),
+            src_samples_per_chunk,
+            src_samples_per_channel,
+        }
+    }
+
+    fn resample(&mut self) -> impl Iterator<Item = Vec<f32>> + '_ {
+        std::iter::from_fn(|| {
+            if self.input_buffer.len() >= self.src_samples_per_chunk {
+                let chunk = self
+                    .input_buffer
+                    .drain(..self.src_samples_per_chunk)
+                    .map(|v| f32::from_sample(v));
+
+                // Skip resampling, just copy the bytes
+                if self.src_rate == self.dest_rate {
+                    return Some(chunk.collect_vec());
+                }
+
+                // Split left + right
+                let mut i = 0;
+                for (x, v) in chunk.enumerate() {
+                    if x % 2 == 0 {
+                        self.left_buffer[i] = v;
+                    } else {
+                        self.right_buffer[i] = v;
+                        i += 1;
+                    }
+                }
+
+                let (_in_len, out_len) = self
+                    .resampler
+                    .process_into_buffer(
+                        &[
+                            self.left_buffer[..self.src_samples_per_channel].to_vec(),
+                            self.right_buffer[..self.src_samples_per_channel].to_vec(),
+                        ],
+                        &mut self.output_buffers,
+                        None,
+                    )
+                    .unwrap();
+
+                let data = interleave(
+                    &self.output_buffers[0][..out_len],
+                    &self.output_buffers[1][..out_len],
+                )
+                .cloned()
+                .collect::<Vec<f32>>();
+
+                return Some(data);
+            }
+            None
+        })
+    }
+
+    fn extend(&mut self, samples: &[T]) {
+        // If all 0's return
+        let (prefix, aligned, suffix) = unsafe { samples.align_to::<u128>() };
+        if prefix.iter().all(|&x| f32::from_sample(x) == 0.0)
+            && suffix.iter().all(|&x| f32::from_sample(x) == 0.0)
+            && aligned.iter().all(|&x| x == 0)
+        {
+            return;
+        }
+
+        self.input_buffer.extend(samples)
+    }
+}
 
 pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
     let (audio_sender, audio_receiver) = mpsc::channel(8);
@@ -56,138 +159,48 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
 
     debug!("Input config: {:?}", config);
 
-    let resampler = rubato::FftFixedOut::<f32>::new(
-        config.sample_rate().0 as usize,
-        SAMPLE_RATE,
-        OPUS_CHUNK_SIZE,
-        2,
-        NUM_CHANNELS,
-    )
-    .unwrap();
-    let resampler_output_buffers = resampler.output_buffer_allocate(true);
-
     std::thread::spawn(move || {
         let stream = match config.sample_format() {
-            SampleFormat::I8 => run::<i8>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::I16 => run::<i16>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::I32 => run::<i32>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::I64 => run::<i64>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::U8 => run::<u8>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::U16 => run::<u16>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::U32 => run::<u32>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::U64 => run::<u64>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::F32 => run::<f32>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
-            SampleFormat::F64 => run::<f64>(
-                &input_device,
-                &config.into(),
-                audio_sender,
-                (
-                    VecDeque::new(),
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                    [0.0f32; OPUS_CHUNK_SIZE],
-                ),
-                resampler,
-                resampler_output_buffers,
-            ),
+            SampleFormat::I8 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<i8>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::I16 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<i16>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::I32 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<i32>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::I64 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<i64>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::U8 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<u8>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::U16 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<u16>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::U32 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<u32>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::U64 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<u64>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::F32 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<f32>(&input_device, &config.into(), audio_sender, resampler)
+            }
+            SampleFormat::F64 => {
+                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
+                run::<f64>(&input_device, &config.into(), audio_sender, resampler)
+            }
             sample_format => panic!("Unsupported sample format '{sample_format}'"),
         }
         .unwrap();
@@ -201,103 +214,25 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
     audio_receiver
 }
 
-pub fn run<T>(
+fn run<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    audio_sender: mpsc::Sender<Vec<f32>>,
-    //TODO: buffer sizes are wrong depending on sample rate
-    mut buffer: (VecDeque<T>, [f32; OPUS_CHUNK_SIZE], [f32; OPUS_CHUNK_SIZE]),
-    mut resampler: impl VecResampler<f32> + 'static,
-    mut resampler_output_buffers: Vec<Vec<f32>>,
+    mut audio_sender: mpsc::Sender<Vec<f32>>,
+    mut resampler: Resampler<T>,
 ) -> Result<Stream, anyhow::Error>
 where
     T: SizedSample + Send + 'static,
     f32: FromSample<T>,
 {
-    let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
-
-    let stream = device.build_input_stream(
+    Ok(device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            write_data(
-                data,
-                audio_sender.clone(),
-                &mut buffer,
-                &mut resampler,
-                &mut resampler_output_buffers,
-            )
-        },
-        err_fn,
-        None,
-    )?;
-
-    Ok(stream)
-}
-
-fn write_data<T>(
-    data: &[T],
-    mut audio_sender: mpsc::Sender<Vec<f32>>,
-    //TODO: buffer sizes are wrong depending on sample rate
-    (sample_buffer, left_buffer, right_buffer): &mut (
-        VecDeque<T>,
-        [f32; OPUS_CHUNK_SIZE],
-        [f32; OPUS_CHUNK_SIZE],
-    ),
-    resampler: &mut impl VecResampler<f32>,
-    resampler_output_buffers: &mut [Vec<f32>],
-) where
-    T: Sample,
-    f32: Sample + FromSample<T>,
-{
-    // If all 0's return
-    let (prefix, aligned, suffix) = unsafe { data.align_to::<u128>() };
-    if prefix.iter().all(|&x| f32::from_sample(x) == 0.0)
-        && suffix.iter().all(|&x| f32::from_sample(x) == 0.0)
-        && aligned.iter().all(|&x| x == 0)
-    {
-        return;
-    }
-
-    // Add to existing samples
-    sample_buffer.extend(data);
-
-    // For every appropriate length chunk
-    while sample_buffer.len() >= resampler.input_frames_next() * 2 {
-        let samples_per_channel = resampler.input_frames_next();
-        let all_samples = samples_per_channel * NUM_CHANNELS;
-        //TODO: Skip resampling if not necessary
-
-        // Split left/right and convert to f32s
-        let mut i = 0;
-        for (x, v) in sample_buffer.drain(..all_samples).enumerate() {
-            let v = f32::from_sample(v);
-            if x % 2 == 0 {
-                left_buffer[i] = v;
-            } else {
-                right_buffer[i] = v;
-                i += 1;
+            resampler.extend(data);
+            for data in resampler.resample() {
+                audio_sender.try_send(data).unwrap();
             }
-        }
-
-        // Resample
-        let (_in_len, out_len) = resampler
-            .process_into_buffer(
-                &[
-                    left_buffer[..samples_per_channel].to_vec(),
-                    right_buffer[..samples_per_channel].to_vec(),
-                ],
-                resampler_output_buffers,
-                None,
-            )
-            .unwrap();
-
-        let data = interleave(
-            &resampler_output_buffers[0][..out_len],
-            &resampler_output_buffers[1][..out_len],
-        )
-        .cloned()
-        .collect::<Vec<f32>>();
-
-        audio_sender.try_send(data).unwrap();
-    }
+        },
+        |err| eprintln!("an error occurred on stream: {}", err),
+        None,
+    )?)
 }
