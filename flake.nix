@@ -96,10 +96,9 @@
                 pkg-config
                 cmake
                 libopus
+                openssl
               ]
-              ++ lib.optionals stdenv.isDarwin [
-                rustPlatform.bindgenHook
-              ];
+              ++ lib.optionals stdenv.isDarwin [ rustPlatform.bindgenHook ];
 
             buildInputs =
               with pkgs;
@@ -116,6 +115,10 @@
                   libiconv
                   AudioUnit
                   CoreAudio
+                  AppKit
+                  Vision
+                  CoreGraphics
+                  MetalKit
                 ]
               );
 
@@ -155,13 +158,7 @@
         };
 
         devShells.default = mkShell (
-          commonArgs
-          // {
-            packages = [
-              trunk
-            ] ++ lib.optionals stdenv.isLinux [ ];
-          }
-          // envVars
+          commonArgs // { packages = [ trunk ] ++ lib.optionals stdenv.isLinux [ ]; } // envVars
         );
 
         formatter = nixpkgs-fmt;

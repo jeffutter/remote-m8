@@ -1,20 +1,52 @@
 use macroquad::prelude::*;
 
-#[macroquad::main("BasicShapes")]
+fn window_conf() -> Conf {
+    Conf {
+        window_title: "Remote M8 UI".to_owned(),
+        // window_width: 320,
+        // window_height: 240,
+        ..Default::default()
+    }
+}
+
+const M8_SCREEN_WIDTH: usize = 320;
+const M8_SCREEN_HEIGHT: usize = 240;
+// const M8_SCREEN_WIDTH: usize = 480;
+// const M8_SCREEN_HEIGHT: usize = 320;
+
+#[macroquad::main(window_conf)]
 async fn main() {
+    let font57 = load_ttf_font("./m8stealth57.ttf").await.unwrap();
+    let font89 = load_ttf_font("./m8stealth89.ttf").await.unwrap();
+
     let url = "ws://192.168.10.12:4000/ws".to_string();
     let mut websocket = quad_net::web_socket::WebSocket::connect(url).unwrap();
 
     let mut last_r = 0;
     let mut last_g = 0;
     let mut last_b = 0;
+    let mut font_id = 0;
 
-    let render_target = render_target(320, 240);
+    let render_target = render_target(M8_SCREEN_WIDTH as u32, M8_SCREEN_HEIGHT as u32);
     render_target.texture.set_filter(FilterMode::Nearest);
+    let mut camera = Camera2D::from_display_rect(Rect::new(
+        0.0,
+        0.0,
+        M8_SCREEN_WIDTH as f32,
+        M8_SCREEN_HEIGHT as f32,
+    ));
+    camera.render_target = Some(render_target.clone());
 
     loop {
         if websocket.connected() {
-            if let Some(msg) = websocket.try_recv() {
+            if let Some(msg) = websocket.try_recv().and_then(|x| {
+                if !x.is_empty() {
+                    debug!("Got A Message");
+                    return Some(x);
+                }
+                debug!("Empty Message");
+                None
+            }) {
                 let (t, rest) = msg.split_at(1);
                 match t {
                     [b'S'] => {
@@ -25,12 +57,7 @@ async fn main() {
                                 continue;
                             }
 
-                            set_camera(&Camera2D {
-                                zoom: vec2(0.01, 0.01),
-                                target: vec2(0.0, 0.0),
-                                render_target: Some(render_target.clone()),
-                                ..Default::default()
-                            });
+                            set_camera(&camera);
 
                             let mut tmp = vec![0xc0, 0xc0];
                             tmp.extend_from_slice(chunk);
@@ -77,73 +104,48 @@ async fn main() {
                                     last_g = g;
                                     last_b = b;
 
-                                    // let rect = Rect::from_x_y_ranges(x..=(x + w), y..=(y + h));
-                                    // let shape = Shape::rect_filled(
-                                    //     rect,
-                                    //     Rounding::ZERO,
-                                    //     Color32::from_rgb(r, g, b),
-                                    // );
-
-                                    if x == 0.0 && y == 0.0 && w >= 320.0 && h >= 240.0 {
+                                    if x == 0.0
+                                        && y == 0.0
+                                        && w >= M8_SCREEN_WIDTH as f32
+                                        && h >= M8_SCREEN_HEIGHT as f32
+                                    {
                                         clear_background(BLACK);
-                                        // self.rects.clear();
                                     } else {
                                         draw_rectangle(x, y, w, h, Color::from_rgba(r, g, b, 255));
                                     }
-
-                                    // if r == 0 && g == 0 && b == 0 {
-                                    // if let Some(idx) = self.rects.iter().enumerate().find_map(
-                                    //     |(idx, (old_rect, _old_shape))| {
-                                    //         if rect.contains_rect(*old_rect)
-                                    //         // if rect.min.x == old_rect.min.x
-                                    //         //     && rect.min.y == old_rect.min.y
-                                    //         //     && rect.max.x == old_rect.max.x
-                                    //         //     && rect.max.y == old_rect.max.y
-                                    //         {
-                                    //             return Some(idx);
-                                    //         }
-                                    //         None
-                                    //     },
-                                    // ) {
-                                    //     let _ = self.rects.remove(idx);
-                                    // }
-                                    // // }
-                                    // self.rects.push((rect, shape));
                                 }
-                                // [0xfd] => {
-                                //     let c = frame[0];
-                                //     let x = frame[1] as f32 + frame[2] as f32 * 256f32;
-                                //     let y = frame[3] as f32 + frame[4] as f32 * 256f32;
-                                //     let r = frame[5];
-                                //     let g = frame[6];
-                                //     let b = frame[7];
-                                //
-                                //     let rect = painter.text(
-                                //         Pos2::new(x, y),
-                                //         Align2::CENTER_CENTER,
-                                //         c,
-                                //         FontId::new(12f32, egui::FontFamily::Monospace),
-                                //         Color32::from_rgb(r, g, b),
-                                //     );
-                                //     let shape =
-                                //         Shape::rect_stroke(rect, Rounding::ZERO, Stroke::NONE);
-                                //
-                                //     if let Some(idx) = self.chars.iter().enumerate().find_map(
-                                //         |(idx, (old_rect, _old_shape))| {
-                                //             // if rect.min.x == old_rect.min.x
-                                //             //     && rect.min.y == old_rect.min.y
-                                //             //     && rect.max.x == old_rect.max.x
-                                //             //     && rect.max.y == old_rect.max.y
-                                //             if rect.contains_rect(*old_rect) {
-                                //                 return Some(idx);
-                                //             }
-                                //             None
-                                //         },
-                                //     ) {
-                                //         let _ = self.chars.remove(idx);
-                                //     }
-                                //     self.chars.push((rect, shape));
-                                // }
+                                [0xfd] => {
+                                    let c = frame[0];
+                                    let x = frame[1] as f32 + frame[2] as f32 * 256f32;
+                                    let y = frame[3] as f32 + frame[4] as f32 * 256f32;
+                                    let r = frame[5];
+                                    let g = frame[6];
+                                    let b = frame[7];
+
+                                    let font = match font_id {
+                                        0 => &font57,
+                                        1 => &font89,
+                                        _ => unimplemented!(),
+                                    };
+
+                                    let c = &[c];
+                                    let char = std::str::from_utf8(c).unwrap();
+
+                                    draw_text_ex(
+                                        char,
+                                        x,
+                                        y,
+                                        TextParams {
+                                            font: Some(font),
+                                            font_size: 10,
+                                            color: Color::from_rgba(r, g, b, 255),
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+                                [0xff] => {
+                                    font_id = frame[4];
+                                }
                                 _ => (),
                             }
                         }
@@ -151,15 +153,6 @@ async fn main() {
                     [b'A'] => {}
                     _ => todo!(),
                 }
-
-                // if self.rects.len() >= 500 {
-                //     self.rects.drain(0..self.rects.len() - 500);
-                // }
-                // if self.chars.len() >= 500 {
-                //     self.chars.drain(0..self.chars.len() - 500);
-                // }
-
-                // self.message = Some(event);
             }
         }
 
@@ -173,16 +166,12 @@ async fn main() {
             0.,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(vec2(screen_width(), screen_height())),
+                dest_size: Some(vec2(M8_SCREEN_WIDTH as f32, M8_SCREEN_HEIGHT as f32)),
+                flip_y: true,
+                source: None,
                 ..Default::default()
             },
         );
-
-        draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
-        draw_rectangle(screen_width() / 2.0 - 60.0, 100.0, 120.0, 60.0, GREEN);
-        draw_circle(screen_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
-
-        draw_text("IT WORKS!", 20.0, 20.0, 30.0, DARKGRAY);
 
         next_frame().await
     }
