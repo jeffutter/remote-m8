@@ -39,9 +39,9 @@ async fn main() {
 
     loop {
         if websocket.connected() {
-            if let Some(msg) = websocket.try_recv().and_then(|x| {
+            while let Some(msg) = websocket.try_recv().and_then(|x| {
                 if !x.is_empty() {
-                    debug!("Got A Message");
+                    // debug!("Got A Message");
                     return Some(x);
                 }
                 debug!("Empty Message");
@@ -134,7 +134,7 @@ async fn main() {
                                     draw_text_ex(
                                         char,
                                         x,
-                                        y,
+                                        y + 11.0, // + 11?
                                         TextParams {
                                             font: Some(font),
                                             font_size: 10,
