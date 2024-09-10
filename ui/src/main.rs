@@ -1,62 +1,189 @@
-#![warn(clippy::all, rust_2018_idioms)]
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+use macroquad::prelude::*;
 
-// When compiling natively:
-#[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+#[macroquad::main("BasicShapes")]
+async fn main() {
+    let url = "ws://192.168.10.12:4000/ws".to_string();
+    let mut websocket = quad_net::web_socket::WebSocket::connect(url).unwrap();
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([300.0, 220.0])
-            .with_icon(
-                // NOTE: Adding an icon is optional
-                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-                    .expect("Failed to load icon"),
-            ),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "eframe template",
-        native_options,
-        Box::new(|cc| Ok(Box::new(remote_m8_ui::RemoteM8UI::new(cc)))),
-    )
-}
+    let mut last_r = 0;
+    let mut last_g = 0;
+    let mut last_b = 0;
 
-// When compiling to web using trunk:
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    // Redirect `log` message to `console.log` and friends:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+    let render_target = render_target(320, 240);
+    render_target.texture.set_filter(FilterMode::Nearest);
 
-    let web_options = eframe::WebOptions::default();
+    loop {
+        if websocket.connected() {
+            if let Some(msg) = websocket.try_recv() {
+                let (t, rest) = msg.split_at(1);
+                match t {
+                    [b'S'] => {
+                        let chunks = rest.split(|x| x == &0xc0);
 
-    wasm_bindgen_futures::spawn_local(async {
-        let start_result = eframe::WebRunner::new()
-            .start(
-                "the_canvas_id",
-                web_options,
-                Box::new(|cc| Ok(Box::new(remote_m8_ui::RemoteM8UI::new(cc)))),
-            )
-            .await;
+                        for chunk in chunks {
+                            if chunk.is_empty() {
+                                continue;
+                            }
 
-        // Remove the loading text and spinner:
-        let loading_text = web_sys::window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.get_element_by_id("loading_text"));
-        if let Some(loading_text) = loading_text {
-            match start_result {
-                Ok(_) => {
-                    loading_text.remove();
+                            set_camera(&Camera2D {
+                                zoom: vec2(0.01, 0.01),
+                                target: vec2(0.0, 0.0),
+                                render_target: Some(render_target.clone()),
+                                ..Default::default()
+                            });
+
+                            let mut tmp = vec![0xc0, 0xc0];
+                            tmp.extend_from_slice(chunk);
+                            tmp.push(0xc0);
+                            let decoded = simple_slip::decode(&tmp).unwrap();
+
+                            let (t, frame) = decoded.split_at(1);
+
+                            match t {
+                                [0xfe] => {
+                                    let x = frame[0] as f32 + frame[1] as f32 * 256f32;
+                                    let y = frame[2] as f32 + frame[3] as f32 * 256f32;
+                                    let mut w = 1.0f32;
+                                    let mut h = 1.0f32;
+                                    let mut r = last_r;
+                                    let mut g = last_g;
+                                    let mut b = last_b;
+
+                                    match frame.len() {
+                                        11 => {
+                                            w = frame[4] as f32 + frame[5] as f32 * 256f32;
+                                            h = frame[6] as f32 + frame[7] as f32 * 256f32;
+                                            r = frame[8];
+                                            g = frame[9];
+                                            b = frame[10];
+                                        }
+                                        8 => {
+                                            w = frame[4] as f32 + frame[5] as f32 * 256f32;
+                                            h = frame[6] as f32 + frame[7] as f32 * 256f32;
+                                        }
+                                        7 => {
+                                            r = frame[4];
+                                            g = frame[5];
+                                            b = frame[6];
+                                        }
+                                        5 => {
+                                            w = 1f32;
+                                            h = 1f32;
+                                        }
+                                        _ => (),
+                                    }
+
+                                    last_r = r;
+                                    last_g = g;
+                                    last_b = b;
+
+                                    // let rect = Rect::from_x_y_ranges(x..=(x + w), y..=(y + h));
+                                    // let shape = Shape::rect_filled(
+                                    //     rect,
+                                    //     Rounding::ZERO,
+                                    //     Color32::from_rgb(r, g, b),
+                                    // );
+
+                                    if x == 0.0 && y == 0.0 && w >= 320.0 && h >= 240.0 {
+                                        clear_background(BLACK);
+                                        // self.rects.clear();
+                                    } else {
+                                        draw_rectangle(x, y, w, h, Color::from_rgba(r, g, b, 255));
+                                    }
+
+                                    // if r == 0 && g == 0 && b == 0 {
+                                    // if let Some(idx) = self.rects.iter().enumerate().find_map(
+                                    //     |(idx, (old_rect, _old_shape))| {
+                                    //         if rect.contains_rect(*old_rect)
+                                    //         // if rect.min.x == old_rect.min.x
+                                    //         //     && rect.min.y == old_rect.min.y
+                                    //         //     && rect.max.x == old_rect.max.x
+                                    //         //     && rect.max.y == old_rect.max.y
+                                    //         {
+                                    //             return Some(idx);
+                                    //         }
+                                    //         None
+                                    //     },
+                                    // ) {
+                                    //     let _ = self.rects.remove(idx);
+                                    // }
+                                    // // }
+                                    // self.rects.push((rect, shape));
+                                }
+                                // [0xfd] => {
+                                //     let c = frame[0];
+                                //     let x = frame[1] as f32 + frame[2] as f32 * 256f32;
+                                //     let y = frame[3] as f32 + frame[4] as f32 * 256f32;
+                                //     let r = frame[5];
+                                //     let g = frame[6];
+                                //     let b = frame[7];
+                                //
+                                //     let rect = painter.text(
+                                //         Pos2::new(x, y),
+                                //         Align2::CENTER_CENTER,
+                                //         c,
+                                //         FontId::new(12f32, egui::FontFamily::Monospace),
+                                //         Color32::from_rgb(r, g, b),
+                                //     );
+                                //     let shape =
+                                //         Shape::rect_stroke(rect, Rounding::ZERO, Stroke::NONE);
+                                //
+                                //     if let Some(idx) = self.chars.iter().enumerate().find_map(
+                                //         |(idx, (old_rect, _old_shape))| {
+                                //             // if rect.min.x == old_rect.min.x
+                                //             //     && rect.min.y == old_rect.min.y
+                                //             //     && rect.max.x == old_rect.max.x
+                                //             //     && rect.max.y == old_rect.max.y
+                                //             if rect.contains_rect(*old_rect) {
+                                //                 return Some(idx);
+                                //             }
+                                //             None
+                                //         },
+                                //     ) {
+                                //         let _ = self.chars.remove(idx);
+                                //     }
+                                //     self.chars.push((rect, shape));
+                                // }
+                                _ => (),
+                            }
+                        }
+                    }
+                    [b'A'] => {}
+                    _ => todo!(),
                 }
-                Err(e) => {
-                    loading_text.set_inner_html(
-                        "<p> The app has crashed. See the developer console for details. </p>",
-                    );
-                    panic!("Failed to start eframe: {e:?}");
-                }
+
+                // if self.rects.len() >= 500 {
+                //     self.rects.drain(0..self.rects.len() - 500);
+                // }
+                // if self.chars.len() >= 500 {
+                //     self.chars.drain(0..self.chars.len() - 500);
+                // }
+
+                // self.message = Some(event);
             }
         }
-    });
+
+        set_default_camera();
+
+        clear_background(BLACK);
+
+        draw_texture_ex(
+            &render_target.texture,
+            0.,
+            0.,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(screen_width(), screen_height())),
+                ..Default::default()
+            },
+        );
+
+        draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
+        draw_rectangle(screen_width() / 2.0 - 60.0, 100.0, 120.0, 60.0, GREEN);
+        draw_circle(screen_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
+
+        draw_text("IT WORKS!", 20.0, 20.0, 30.0, DARKGRAY);
+
+        next_frame().await
+    }
 }
