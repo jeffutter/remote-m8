@@ -160,47 +160,25 @@ pub fn run_audio() -> impl futures::stream::Stream<Item = Vec<f32>> {
     debug!("Input config: {:?}", config);
 
     std::thread::spawn(move || {
+        macro_rules! handle_sample {
+            ($sample:ty) => {{
+                let sample_rate = config.sample_rate().0 as usize;
+                let resampler = Resampler::new(sample_rate, SAMPLE_RATE);
+                run::<$sample>(&input_device, &config.into(), audio_sender, resampler)
+            }};
+        }
+
         let stream = match config.sample_format() {
-            SampleFormat::I8 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<i8>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::I16 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<i16>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::I32 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<i32>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::I64 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<i64>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::U8 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<u8>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::U16 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<u16>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::U32 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<u32>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::U64 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<u64>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::F32 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<f32>(&input_device, &config.into(), audio_sender, resampler)
-            }
-            SampleFormat::F64 => {
-                let resampler = Resampler::new(config.sample_rate().0 as usize, SAMPLE_RATE);
-                run::<f64>(&input_device, &config.into(), audio_sender, resampler)
-            }
+            SampleFormat::I8 => handle_sample!(i8),
+            SampleFormat::I16 => handle_sample!(i16),
+            SampleFormat::I32 => handle_sample!(i32),
+            SampleFormat::I64 => handle_sample!(i64),
+            SampleFormat::U8 => handle_sample!(u8),
+            SampleFormat::U16 => handle_sample!(u16),
+            SampleFormat::U32 => handle_sample!(u32),
+            SampleFormat::U64 => handle_sample!(u64),
+            SampleFormat::F32 => handle_sample!(f32),
+            SampleFormat::F64 => handle_sample!(f64),
             sample_format => panic!("Unsupported sample format '{sample_format}'"),
         }
         .unwrap();
