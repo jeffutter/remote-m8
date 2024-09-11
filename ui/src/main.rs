@@ -1,4 +1,6 @@
-use macroquad::prelude::*;
+use std::collections::HashMap;
+
+use macroquad::{input::KeyCode, prelude::*};
 
 fn window_conf() -> Conf {
     Conf {
@@ -26,6 +28,18 @@ async fn main() {
     let mut last_g = 0;
     let mut last_b = 0;
     let mut font_id = 0;
+    let mut keystate = 0;
+
+    let keymap = HashMap::from([
+        (KeyCode::Up, 6),
+        (KeyCode::Down, 5),
+        (KeyCode::Left, 7),
+        (KeyCode::Right, 2),
+        (KeyCode::LeftShift, 4),
+        (KeyCode::Space, 3),
+        (KeyCode::Z, 1),
+        (KeyCode::X, 0),
+    ]);
 
     let render_target = render_target(M8_SCREEN_WIDTH as u32, M8_SCREEN_HEIGHT as u32);
     render_target.texture.set_filter(FilterMode::Nearest);
@@ -159,6 +173,30 @@ async fn main() {
         set_default_camera();
 
         clear_background(BLACK);
+
+        let mut process_key = |key_code: KeyCode, down: bool| {
+            if let Some(bit) = keymap.get(&key_code) {
+                let new_state = match down {
+                    true => keystate | (1 << bit),
+                    false => keystate & !(1 << bit),
+                };
+
+                if new_state == keystate {
+                    return;
+                }
+
+                keystate = new_state;
+
+                websocket.send_bytes(&[0x43, keystate]);
+            }
+        };
+
+        for keycode in get_keys_pressed() {
+            process_key(keycode, true);
+        }
+        for keycode in get_keys_released() {
+            process_key(keycode, false);
+        }
 
         draw_texture_ex(
             &render_target.texture,

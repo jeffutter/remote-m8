@@ -1675,8 +1675,7 @@ dependencies = [
 [[package]]
 name = "quad-net"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30c105fb65f3c1ab417c1d8baf359d9ece9b1de7bdb18a4b603cd9e8e70d703c"
+source = "git+https://github.com/not-fl3/quad-net.git?rev=31796d4ed5c9cce57c7702d18b6140d5ffacfccf#31796d4ed5c9cce57c7702d18b6140d5ffacfccf"
 dependencies = [
  "nanoserde",
  "qws",

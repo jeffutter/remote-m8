@@ -7,7 +7,10 @@ edition = "2021"
 [dependencies]
 simple_slip = "0.1.2"
 macroquad = "0.4.13"
-quad-net = "0.1.1"
+quad-net = { git = "https://github.com/not-fl3/quad-net.git", rev = "31796d4ed5c9cce57c7702d18b6140d5ffacfccf" }
+
+[patch.crates-io]
+miniquad = { git = 'https://github.com/not-fl3/miniquad.git', rev = "https://github.com/not-fl3/miniquad/commit/4bcc8d5dbd951ce11847795c5c9e5f971356ca9e" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
