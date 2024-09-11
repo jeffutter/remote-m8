@@ -6,8 +6,15 @@ edition = "2021"
 
 [dependencies]
 simple_slip = "0.1.2"
+# macroquad = { version = "0.4.13", features = ["audio"] }
 macroquad = "0.4.13"
 quad-net = { git = "https://github.com/not-fl3/quad-net.git", rev = "31796d4ed5c9cce57c7702d18b6140d5ffacfccf" }
+cpal = "0.15.3"
+rubato = "0.15.0"
+itertools = "0.13.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+opus = "0.3.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
