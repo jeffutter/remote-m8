@@ -13,6 +13,7 @@ fn window_conf() -> Conf {
 
 const M8_SCREEN_WIDTH: usize = 320;
 const M8_SCREEN_HEIGHT: usize = 240;
+const M8_ASPECT_RATIO: f32 = M8_SCREEN_WIDTH as f32 / M8_SCREEN_HEIGHT as f32;
 // const M8_SCREEN_WIDTH: usize = 480;
 // const M8_SCREEN_HEIGHT: usize = 320;
 
@@ -229,13 +230,32 @@ async fn main() {
             process_key(keycode, false);
         }
 
+        let (width, height) = match (screen_width(), screen_height()) {
+            (width, height) if width >= height * M8_ASPECT_RATIO => {
+                (height * M8_ASPECT_RATIO, height)
+            }
+            (width, height) if width <= height * M8_ASPECT_RATIO => {
+                (width, width / M8_ASPECT_RATIO)
+            }
+            (_, _) => unreachable!(),
+        };
+
+        println!(
+            "ar: {}, w: {}, h: {}, sw: {}, sh: {}",
+            M8_ASPECT_RATIO,
+            width,
+            height,
+            screen_width(),
+            screen_height()
+        );
+
         draw_texture_ex(
             &render_target.texture,
-            0.,
-            0.,
+            (screen_width() - width) / 2.0,
+            (screen_height() - height) / 2.0,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(vec2(M8_SCREEN_WIDTH as f32, M8_SCREEN_HEIGHT as f32)),
+                dest_size: Some(vec2(width, height)),
                 flip_y: true,
                 source: None,
                 ..Default::default()
