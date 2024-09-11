@@ -15,7 +15,17 @@ const M8_SCREEN_WIDTH: usize = 320;
 const M8_SCREEN_HEIGHT: usize = 240;
 const M8_ASPECT_RATIO: f32 = M8_SCREEN_WIDTH as f32 / M8_SCREEN_HEIGHT as f32;
 // const M8_SCREEN_WIDTH: usize = 480;
-// const M8_SCREEN_HEIGHT: usize = 320;
+//
+
+const RECT_FRAME: u8 = 0xfe;
+const TEXT_FRAME: u8 = 0xfd;
+const WAVE_FRAME: u8 = 0xfc;
+const SYSTEM_FRAME: u8 = 0xff;
+
+const AUDIO_PACKET: u8 = b'A';
+const SERIAL_PACKET: u8 = b'S';
+
+const SLIP_FRAME_END: u8 = 0xc0;
 
 #[macroquad::main(window_conf)]
 async fn main() {
@@ -56,15 +66,13 @@ async fn main() {
         if websocket.connected() {
             while let Some(msg) = websocket.try_recv().and_then(|x| {
                 if !x.is_empty() {
-                    // debug!("Got A Message");
                     return Some(x);
                 }
-                debug!("Empty Message");
                 None
             }) {
                 let (t, rest) = msg.split_at(1);
                 match t {
-                    [b'S'] => {
+                    [SERIAL_PACKET] => {
                         let chunks = rest.split(|x| x == &0xc0);
 
                         for chunk in chunks {
@@ -74,15 +82,18 @@ async fn main() {
 
                             set_camera(&camera);
 
-                            let mut tmp = vec![0xc0, 0xc0];
+                            // This slip library is weird and doesn't
+                            // parse anything until after two end
+                            // frames
+                            let mut tmp = vec![SLIP_FRAME_END, SLIP_FRAME_END];
                             tmp.extend_from_slice(chunk);
-                            tmp.push(0xc0);
+                            tmp.push(SLIP_FRAME_END);
                             let decoded = simple_slip::decode(&tmp).unwrap();
 
                             let (t, frame) = decoded.split_at(1);
 
                             match t {
-                                [0xfe] => {
+                                [RECT_FRAME] => {
                                     let x = frame[0] as f32 + frame[1] as f32 * 256f32;
                                     let y = frame[2] as f32 + frame[3] as f32 * 256f32;
                                     let mut w = 1.0f32;
@@ -129,7 +140,7 @@ async fn main() {
                                         draw_rectangle(x, y, w, h, Color::from_rgba(r, g, b, 255));
                                     }
                                 }
-                                [0xfd] => {
+                                [TEXT_FRAME] => {
                                     let c = frame[0];
                                     let x = frame[1] as f32 + frame[2] as f32 * 256f32;
                                     let y = frame[3] as f32 + frame[4] as f32 * 256f32;
@@ -184,14 +195,41 @@ async fn main() {
                                         },
                                     );
                                 }
-                                [0xff] => {
+                                [WAVE_FRAME] => {
+                                    let (color, data) = frame.split_at(3);
+                                    let r = color[0];
+                                    let g = color[1];
+                                    let b = color[2];
+                                    let height = (24f32 / 320f32) * M8_SCREEN_WIDTH as f32;
+                                    draw_rectangle(
+                                        0.0,
+                                        0.0,
+                                        M8_SCREEN_WIDTH as f32,
+                                        height,
+                                        Color::from_rgba(0, 0, 0, 255),
+                                    );
+
+                                    for (idx, y) in data.iter().enumerate() {
+                                        // if y == &255 {
+                                        //     continue;
+                                        // }
+                                        draw_rectangle(
+                                            idx as f32,
+                                            *y.min(&20) as f32,
+                                            1.0,
+                                            1.0,
+                                            Color::from_rgba(r, g, b, 255),
+                                        );
+                                    }
+                                }
+                                [SYSTEM_FRAME] => {
                                     font_id = frame[4];
                                 }
                                 _ => (),
                             }
                         }
                     }
-                    [b'A'] => {}
+                    [AUDIO_PACKET] => {}
                     _ => todo!(),
                 }
             }
