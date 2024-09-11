@@ -10,3 +10,6 @@ members = [
 lto = true
 codegen-units = 1
 opt-level = "z"
+
+[patch.crates-io]
+miniquad = { git = 'https://github.com/not-fl3/miniquad.git', rev = "4bcc8d5dbd951ce11847795c5c9e5f971356ca9e" }

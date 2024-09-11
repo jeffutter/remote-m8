@@ -149,16 +149,14 @@ async fn main() {
                                     let c = &[c];
                                     let char = std::str::from_utf8(c).unwrap();
 
-                                    let text_size = measure_text(char, Some(font), 10, 1.0);
-
                                     if (foreground_r, foreground_g, foreground_b)
                                         != (background_r, background_g, background_b)
                                     {
                                         draw_rectangle(
                                             x,
-                                            y + 11.0 - text_size.offset_y,
-                                            text_size.width,
-                                            text_size.height,
+                                            y + 11.0 - 9.0,
+                                            8.0,
+                                            11.0,
                                             Color::from_rgba(
                                                 background_r,
                                                 background_g,
@@ -239,15 +237,6 @@ async fn main() {
             }
             (_, _) => unreachable!(),
         };
-
-        println!(
-            "ar: {}, w: {}, h: {}, sw: {}, sh: {}",
-            M8_ASPECT_RATIO,
-            width,
-            height,
-            screen_width(),
-            screen_height()
-        );
 
         draw_texture_ex(
             &render_target.texture,
