@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{mpsc::Receiver, Arc, Mutex},
+    time::Duration,
 };
 
 use cpal::{
@@ -104,28 +105,41 @@ where
             .drain(..(n.min(self.output_buffer.len())))
     }
 
-    fn len(&self) -> usize {
-        self.output_buffer.len()
-    }
+    // fn len(&self) -> usize {
+    //     self.output_buffer.len()
+    // }
 }
 
-fn write_audio<T: Sample + FromSample<f32>>(data: &mut [T], resampler: Arc<Mutex<Resampler<T>>>) {
-    let mut resampler = resampler.lock().unwrap();
-    println!(
-        "resampler_len: {:?}, req_len: {:?}",
-        resampler.len(),
-        data.len()
-    );
+fn write_audio<T: Sample + FromSample<f32>>(
+    audio_receiver: &mut Receiver<Vec<u8>>,
+    resampler: &mut Resampler<T>,
+    decoder: &mut opus::Decoder,
+    decode_buffer: &mut [f32; 1024 * 4],
+    data: &mut [T],
+) {
+    println!("Now: {:?}", std::time::Instant::now());
 
-    let out = resampler.drain(data.len());
-    for (i, b) in out.enumerate() {
-        data[i] = b;
+    let mut idx = 0;
+    while idx < data.len() {
+        println!("idx: {}, needed: {}", idx, data.len() - idx);
+        let resampled = resampler.drain(data.len() - idx);
+        for s in resampled {
+            data[idx] = s;
+            idx += 1;
+        }
+
+        if idx < data.len() {
+            let packet = audio_receiver.recv().unwrap();
+            let n = decoder.decode_float(&packet, decode_buffer, false).unwrap();
+            resampler.extend(&decode_buffer[..n]);
+        }
     }
 }
 
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut decode_buffer = [0f32; 1024 * 4];
+    let (audio_sender, mut audio_receiver) = std::sync::mpsc::channel::<Vec<u8>>();
 
     let host = cpal::default_host();
     let audio_device = host
@@ -185,17 +199,54 @@ async fn main() {
     macro_rules! handle_sample {
         ($sample:ty) => {{
             let sample_rate = supported_config.sample_rate().0 as usize;
-            let resampler = Arc::new(Mutex::new(Resampler::<$sample>::new(
-                SAMPLE_RATE,
-                sample_rate,
-            )));
+            let mut resampler = Resampler::<$sample>::new(SAMPLE_RATE, sample_rate);
+            // let mut leftover_audio: Vec<$sample> = Vec::new();
+
             // run::<$sample>(&input_device, &config.into(), audio_sender, resampler)
-            let resampler1 = resampler.clone();
+            // let resampler1 = resampler.clone();
             let stream = audio_device
                 .build_output_stream(
                     &config,
                     move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                        write_audio::<$sample>(data, resampler1.clone())
+                        write_audio::<$sample>(&mut audio_receiver, &mut resampler, &mut decoder, &mut decode_buffer, data);
+                        // let mut idx = 0;
+                        // // if leftover_audio.len() > 0 {
+                        // //     for s in data.into_iter() {
+                        // //         *s = leftover_audio[idx];
+                        // //         idx += 1;
+                        // //     }
+                        // // }
+                        // let needed = data.len();// - idx;
+                        //
+                        // while needed > 0 {
+                        //     let packet = audio_receiver.recv().unwrap();
+                        //     let n = decoder
+                        //         .decode_float(&packet, &mut decode_buffer, false)
+                        //         .unwrap();
+                        //     resampler.extend(&decode_buffer[..n]);
+                        //     let resampled = resampler.drain(needed);
+                        //     for s in resampled {
+                        //         data[idx] = s;
+                        //         idx += 1;
+                        //     }
+                        // }
+
+                        // while let Ok(packet) = audio_receiver.recv_timeout(Duration::from_millis(1))
+                        // {
+                        //     let resampled = resampler.drain(needed);
+                        // }
+                        // write_audio::<$sample>(data, resampler1.clone())
+                        // let mut resampler = resampler.lock().unwrap();
+                        // println!(
+                        //     "resampler_len: {:?}, req_len: {:?}",
+                        //     resampler.len(),
+                        //     data.len()
+                        // );
+                        //
+                        // let out = resampler.drain(data.len());
+                        // for (i, b) in out.enumerate() {
+                        //     data[i] = b;
+                        // }
                     },
                     err_fn,
                     None,
@@ -205,7 +256,7 @@ async fn main() {
             stream.play().unwrap();
 
             'runloop: loop {
-                println!("FPS: {}", get_fps());
+                // println!("FPS: {}", get_fps());
                 if websocket.connected() {
                     while let Some(msg) = websocket.try_recv().and_then(|x| {
                         if !x.is_empty() {
@@ -379,13 +430,14 @@ async fn main() {
                                 }
                             }
                             [AUDIO_PACKET] => {
-                                let n = decoder
-                                    .decode_float(rest, &mut decode_buffer, false)
-                                    .unwrap();
-                                {
-                                    println!("Decoded: {n}");
-                                    resampler.lock().unwrap().extend(&decode_buffer[..n]);
-                                }
+                                audio_sender.send(rest.to_vec()).unwrap();
+                                // let n = decoder
+                                //     .decode_float(rest, &mut decode_buffer, false)
+                                //     .unwrap();
+                                // {
+                                //     println!("Decoded: {n}");
+                                //     // resampler.lock().unwrap().extend(&decode_buffer[..n]);
+                                // }
                             }
                             _ => todo!(),
                         }
