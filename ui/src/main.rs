@@ -51,7 +51,7 @@ async fn main() {
     ));
     camera.render_target = Some(render_target.clone());
 
-    loop {
+    'runloop: loop {
         if websocket.connected() {
             while let Some(msg) = websocket.try_recv().and_then(|x| {
                 if !x.is_empty() {
@@ -132,9 +132,12 @@ async fn main() {
                                     let c = frame[0];
                                     let x = frame[1] as f32 + frame[2] as f32 * 256f32;
                                     let y = frame[3] as f32 + frame[4] as f32 * 256f32;
-                                    let r = frame[5];
-                                    let g = frame[6];
-                                    let b = frame[7];
+                                    let foreground_r = frame[5];
+                                    let foreground_g = frame[6];
+                                    let foreground_b = frame[7];
+                                    let background_r = frame[8];
+                                    let background_g = frame[9];
+                                    let background_b = frame[10];
 
                                     let font = match font_id {
                                         0 => &font57,
@@ -145,6 +148,25 @@ async fn main() {
                                     let c = &[c];
                                     let char = std::str::from_utf8(c).unwrap();
 
+                                    let text_size = measure_text(char, Some(font), 10, 1.0);
+
+                                    if (foreground_r, foreground_g, foreground_b)
+                                        != (background_r, background_g, background_b)
+                                    {
+                                        draw_rectangle(
+                                            x,
+                                            y + 11.0 - text_size.offset_y,
+                                            text_size.width,
+                                            text_size.height,
+                                            Color::from_rgba(
+                                                background_r,
+                                                background_g,
+                                                background_b,
+                                                255,
+                                            ),
+                                        );
+                                    }
+
                                     draw_text_ex(
                                         char,
                                         x,
@@ -152,7 +174,13 @@ async fn main() {
                                         TextParams {
                                             font: Some(font),
                                             font_size: 10,
-                                            color: Color::from_rgba(r, g, b, 255),
+                                            font_scale: 1.0,
+                                            color: Color::from_rgba(
+                                                foreground_r,
+                                                foreground_g,
+                                                foreground_b,
+                                                255,
+                                            ),
                                             ..Default::default()
                                         },
                                     );
@@ -192,6 +220,9 @@ async fn main() {
         };
 
         for keycode in get_keys_pressed() {
+            if keycode == KeyCode::Q {
+                break 'runloop;
+            }
             process_key(keycode, true);
         }
         for keycode in get_keys_released() {
