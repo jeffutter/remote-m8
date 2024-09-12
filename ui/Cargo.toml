@@ -12,6 +12,7 @@ quad-net = { git = "https://github.com/not-fl3/quad-net.git", rev = "31796d4ed5c
 cpal = "0.15.3"
 rubato = "0.15.0"
 itertools = "0.13.0"
+ringbuf = "0.4.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 opus = "0.3.0"

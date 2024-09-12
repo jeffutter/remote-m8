@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::mpsc::Receiver,
+    time::{Duration, Instant},
 };
 
 use cpal::{
@@ -9,6 +9,10 @@ use cpal::{
 };
 use itertools::interleave;
 use macroquad::{input::KeyCode, prelude::*};
+use ringbuf::{
+    traits::{Consumer, Producer, Split},
+    HeapCons, HeapRb,
+};
 use rubato::VecResampler;
 
 fn window_conf() -> Conf {
@@ -114,33 +118,15 @@ where
     }
 }
 
-fn write_audio<T: Sample + FromSample<f32>>(
-    audio_receiver: &mut Receiver<Vec<u8>>,
-    resampler: &mut Resampler<T>,
-    decoder: &mut opus::Decoder,
-    decode_buffer: &mut [f32; OPUS_CHUNK_SIZE * NUM_CHANNELS],
-    data: &mut [T],
-) {
-    let mut idx = 0;
-    while idx < data.len() {
-        let resampled = resampler.drain(data.len() - idx);
-        for s in resampled {
-            data[idx] = s;
-            idx += 1;
-        }
-
-        if idx < data.len() {
-            let packet = audio_receiver.recv().unwrap();
-            let n = decoder.decode_float(&packet, decode_buffer, false).unwrap();
-            resampler.extend(&decode_buffer[..n * NUM_CHANNELS]);
-        }
+fn write_audio<T: Sample + FromSample<f32>>(audio_receiver: &mut HeapCons<T>, data: &mut [T]) {
+    for v in data.iter_mut() {
+        *v = audio_receiver.try_pop().unwrap_or(T::from_sample(0f32));
     }
 }
 
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut decode_buffer = [0f32; OPUS_CHUNK_SIZE * NUM_CHANNELS];
-    let (audio_sender, mut audio_receiver) = std::sync::mpsc::channel::<Vec<u8>>();
 
     let host = cpal::default_host();
     let audio_device = host
@@ -205,6 +191,7 @@ async fn main() {
 
     macro_rules! handle_sample {
         ($sample:ty) => {{
+            let (mut audio_sender, mut audio_receiver) = HeapRb::new(SAMPLE_RATE).split();
             let sample_rate = supported_config.sample_rate().0 as usize;
             let mut resampler = Resampler::<$sample>::new(SAMPLE_RATE, sample_rate);
 
@@ -212,13 +199,7 @@ async fn main() {
                 .build_output_stream(
                     &config,
                     move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                        write_audio::<$sample>(
-                            &mut audio_receiver,
-                            &mut resampler,
-                            &mut decoder,
-                            &mut decode_buffer,
-                            data,
-                        );
+                        write_audio::<$sample>(&mut audio_receiver, data);
                     },
                     err_fn,
                     None,
@@ -227,8 +208,28 @@ async fn main() {
 
             stream.play().unwrap();
 
+            let mut last: Option<Instant> = None;
+            let mut rects = 0;
+            let mut texts = 0;
+
             'runloop: loop {
-                // println!("FPS: {}", get_fps());
+                let now = Instant::now();
+                if last.is_none() {
+                    last = Some(now);
+                }
+                if let Some(local_last) = last {
+                    // if (now - last) <= Duration::from_millis(1000) {
+                    //     next_frame().await;
+                    //     continue;
+                    // }
+                    if (now - local_last) >= Duration::from_millis(1000) {
+                        last = Some(now);
+                        println!("Rects: {rects:0000} Texts: {texts:0000}");
+                        rects = 0;
+                        texts = 0;
+                    }
+                }
+
                 if websocket.connected() {
                     while let Some(msg) = websocket.try_recv().and_then(|x| {
                         if !x.is_empty() {
@@ -236,7 +237,7 @@ async fn main() {
                         }
                         None
                     }) {
-                        let (t, rest) = msg.split_at(1);
+                        let (t, mut rest) = msg.split_at(1);
                         match t {
                             [SERIAL_PACKET] => {
                                 let chunks = rest.split(|x| x == &0xc0);
@@ -303,6 +304,7 @@ async fn main() {
                                             {
                                                 clear_background(BLACK);
                                             } else {
+                                                rects += 1;
                                                 draw_rectangle(
                                                     x,
                                                     y,
@@ -335,6 +337,7 @@ async fn main() {
                                             if (foreground_r, foreground_g, foreground_b)
                                                 != (background_r, background_g, background_b)
                                             {
+                                                rects += 1;
                                                 draw_rectangle(
                                                     x,
                                                     y + 11.0 - 10.0,
@@ -351,6 +354,7 @@ async fn main() {
 
                                             let (font_size, font_scale, font_aspect) =
                                                 camera_font_scale(10.0);
+                                            texts += 1;
                                             draw_text_ex(
                                                 char,
                                                 x,
@@ -406,7 +410,13 @@ async fn main() {
                                 }
                             }
                             [AUDIO_PACKET] => {
-                                audio_sender.send(rest.to_vec()).unwrap();
+                                let n = decoder
+                                    .decode_float(&mut rest, &mut decode_buffer, false)
+                                    .unwrap();
+                                resampler.extend(&decode_buffer[..n * NUM_CHANNELS]);
+                                let _ = audio_sender.push_slice(
+                                    &resampler.drain(1024 * 1024 * 1024).collect::<Vec<_>>(),
+                                );
                             }
                             _ => todo!(),
                         }
