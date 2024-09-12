@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{mpsc::Receiver, Arc, Mutex},
-    time::Duration,
+    sync::mpsc::Receiver,
 };
 
 use cpal::{
@@ -42,7 +41,7 @@ const NUM_CHANNELS: usize = 2;
 const SAMPLE_RATE: usize = 48000;
 
 struct Resampler<T> {
-    resampler: rubato::FftFixedIn<f32>,
+    resampler: rubato::FftFixedInOut<f32>,
     src_rate: usize,
     dest_rate: usize,
     input_buffers: Vec<Vec<f32>>,
@@ -55,8 +54,12 @@ where
     T: Sample + FromSample<f32>,
 {
     fn new(src_rate: usize, dest_rate: usize) -> Self {
+        // Math here is flipped since we don't actually want OPUS_CHUNK_SIZED INPUT, we want
+        // OPUS_CHUNK_SIZED output.
+        let sample_ratio = dest_rate as f32 / src_rate as f32;
+        let in_chunk_size = (OPUS_CHUNK_SIZE as f32 * sample_ratio) as usize;
         let resampler =
-            rubato::FftFixedIn::<f32>::new(src_rate, dest_rate, OPUS_CHUNK_SIZE, 2, NUM_CHANNELS)
+            rubato::FftFixedInOut::<f32>::new(src_rate, dest_rate, in_chunk_size, NUM_CHANNELS)
                 .unwrap();
         let input_buffers = resampler.input_buffer_allocate(true);
         let output_buffers = resampler.output_buffer_allocate(true);
@@ -89,14 +92,17 @@ where
             }
         }
 
-        let (_in_len, _out_len) = self
+        let (_in_len, out_len_per_channel) = self
             .resampler
             .process_into_buffer(&self.input_buffers, &mut self.output_buffers, None)
             .unwrap();
 
         self.output_buffer.extend(
-            interleave(&self.output_buffers[0], &self.output_buffers[1])
-                .map(|x| T::from_sample(*x)),
+            interleave(
+                &self.output_buffers[0][..out_len_per_channel],
+                &self.output_buffers[1][..out_len_per_channel],
+            )
+            .map(|x| T::from_sample(*x)),
         );
     }
 
@@ -104,24 +110,17 @@ where
         self.output_buffer
             .drain(..(n.min(self.output_buffer.len())))
     }
-
-    // fn len(&self) -> usize {
-    //     self.output_buffer.len()
-    // }
 }
 
 fn write_audio<T: Sample + FromSample<f32>>(
     audio_receiver: &mut Receiver<Vec<u8>>,
     resampler: &mut Resampler<T>,
     decoder: &mut opus::Decoder,
-    decode_buffer: &mut [f32; 1024 * 4],
+    decode_buffer: &mut [f32; OPUS_CHUNK_SIZE * NUM_CHANNELS],
     data: &mut [T],
 ) {
-    println!("Now: {:?}", std::time::Instant::now());
-
     let mut idx = 0;
     while idx < data.len() {
-        println!("idx: {}, needed: {}", idx, data.len() - idx);
         let resampled = resampler.drain(data.len() - idx);
         for s in resampled {
             data[idx] = s;
@@ -131,14 +130,14 @@ fn write_audio<T: Sample + FromSample<f32>>(
         if idx < data.len() {
             let packet = audio_receiver.recv().unwrap();
             let n = decoder.decode_float(&packet, decode_buffer, false).unwrap();
-            resampler.extend(&decode_buffer[..n]);
+            resampler.extend(&decode_buffer[..n * NUM_CHANNELS]);
         }
     }
 }
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let mut decode_buffer = [0f32; 1024 * 4];
+    let mut decode_buffer = [0f32; OPUS_CHUNK_SIZE * NUM_CHANNELS];
     let (audio_sender, mut audio_receiver) = std::sync::mpsc::channel::<Vec<u8>>();
 
     let host = cpal::default_host();
@@ -200,53 +199,18 @@ async fn main() {
         ($sample:ty) => {{
             let sample_rate = supported_config.sample_rate().0 as usize;
             let mut resampler = Resampler::<$sample>::new(SAMPLE_RATE, sample_rate);
-            // let mut leftover_audio: Vec<$sample> = Vec::new();
 
-            // run::<$sample>(&input_device, &config.into(), audio_sender, resampler)
-            // let resampler1 = resampler.clone();
             let stream = audio_device
                 .build_output_stream(
                     &config,
                     move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                        write_audio::<$sample>(&mut audio_receiver, &mut resampler, &mut decoder, &mut decode_buffer, data);
-                        // let mut idx = 0;
-                        // // if leftover_audio.len() > 0 {
-                        // //     for s in data.into_iter() {
-                        // //         *s = leftover_audio[idx];
-                        // //         idx += 1;
-                        // //     }
-                        // // }
-                        // let needed = data.len();// - idx;
-                        //
-                        // while needed > 0 {
-                        //     let packet = audio_receiver.recv().unwrap();
-                        //     let n = decoder
-                        //         .decode_float(&packet, &mut decode_buffer, false)
-                        //         .unwrap();
-                        //     resampler.extend(&decode_buffer[..n]);
-                        //     let resampled = resampler.drain(needed);
-                        //     for s in resampled {
-                        //         data[idx] = s;
-                        //         idx += 1;
-                        //     }
-                        // }
-
-                        // while let Ok(packet) = audio_receiver.recv_timeout(Duration::from_millis(1))
-                        // {
-                        //     let resampled = resampler.drain(needed);
-                        // }
-                        // write_audio::<$sample>(data, resampler1.clone())
-                        // let mut resampler = resampler.lock().unwrap();
-                        // println!(
-                        //     "resampler_len: {:?}, req_len: {:?}",
-                        //     resampler.len(),
-                        //     data.len()
-                        // );
-                        //
-                        // let out = resampler.drain(data.len());
-                        // for (i, b) in out.enumerate() {
-                        //     data[i] = b;
-                        // }
+                        write_audio::<$sample>(
+                            &mut audio_receiver,
+                            &mut resampler,
+                            &mut decoder,
+                            &mut decode_buffer,
+                            data,
+                        );
                     },
                     err_fn,
                     None,
@@ -431,13 +395,6 @@ async fn main() {
                             }
                             [AUDIO_PACKET] => {
                                 audio_sender.send(rest.to_vec()).unwrap();
-                                // let n = decoder
-                                //     .decode_float(rest, &mut decode_buffer, false)
-                                //     .unwrap();
-                                // {
-                                //     println!("Decoded: {n}");
-                                //     // resampler.lock().unwrap().extend(&decode_buffer[..n]);
-                                // }
                             }
                             _ => todo!(),
                         }
