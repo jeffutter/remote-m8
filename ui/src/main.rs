@@ -160,8 +160,10 @@ async fn main() {
     let sample_format = supported_config.sample_format();
     let config: StreamConfig = supported_config.clone().into();
 
-    let font57 = load_ttf_font("./m8stealth57.ttf").await.unwrap();
-    let font89 = load_ttf_font("./m8stealth89.ttf").await.unwrap();
+    let mut font57 = load_ttf_font("./m8stealth57.ttf").await.unwrap();
+    font57.set_filter(FilterMode::Linear);
+    let mut font89 = load_ttf_font("./m8stealth89.ttf").await.unwrap();
+    font89.set_filter(FilterMode::Linear);
     let mut decoder =
         opus::Decoder::new(48000, opus::Channels::Stereo).expect("Couldn't create opus decoder");
 
@@ -194,6 +196,9 @@ async fn main() {
         M8_SCREEN_HEIGHT as f32,
     ));
     camera.render_target = Some(render_target.clone());
+
+    let mut last_screen_width = screen_width();
+    let mut last_screen_height = screen_height();
 
     macro_rules! handle_sample {
         ($sample:ty) => {{
@@ -329,7 +334,7 @@ async fn main() {
                                             {
                                                 draw_rectangle(
                                                     x,
-                                                    y + 11.0 - 9.0,
+                                                    y + 11.0 - 10.0, // ?
                                                     8.0,
                                                     11.0,
                                                     Color::from_rgba(
@@ -341,14 +346,20 @@ async fn main() {
                                                 );
                                             }
 
+                                            let (font_size, font_scale, font_aspect) =
+                                                camera_font_scale(10.0);
                                             draw_text_ex(
                                                 char,
                                                 x,
                                                 y + 11.0, // + 11?
                                                 TextParams {
                                                     font: Some(font),
-                                                    font_size: 10,
-                                                    font_scale: 1.0,
+                                                    // font_size: 10,
+                                                    // font_scale: 1.0,
+                                                    // font_scale_aspect: 1.0,
+                                                    font_size,
+                                                    font_scale,
+                                                    font_scale_aspect: font_aspect,
                                                     color: Color::from_rgba(
                                                         foreground_r,
                                                         foreground_g,
@@ -399,6 +410,19 @@ async fn main() {
                             _ => todo!(),
                         }
                     }
+                }
+
+                if screen_height() != last_screen_height {
+                    last_screen_height = screen_height();
+                    websocket.send_bytes(&[0x44]);
+                    websocket.send_bytes(&[0x45, 0x52]);
+                    clear_background(BLACK);
+                }
+                if screen_width() != last_screen_width {
+                    last_screen_width = screen_width();
+                    websocket.send_bytes(&[0x44]);
+                    websocket.send_bytes(&[0x45, 0x52]);
+                    clear_background(BLACK);
                 }
 
                 set_default_camera();
