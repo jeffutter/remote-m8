@@ -40,6 +40,8 @@ const OPUS_CHUNK_SIZE: usize = 960;
 const NUM_CHANNELS: usize = 2;
 const SAMPLE_RATE: usize = 48000;
 
+const WAVE_HEIGHT: usize = 26;
+
 struct Resampler<T> {
     resampler: rubato::FftFixedInOut<f32>,
     src_rate: usize,
@@ -160,8 +162,10 @@ async fn main() {
     let sample_format = supported_config.sample_format();
     let config: StreamConfig = supported_config.clone().into();
 
-    let font57 = load_ttf_font("./m8stealth57.ttf").await.unwrap();
-    let font89 = load_ttf_font("./m8stealth89.ttf").await.unwrap();
+    let mut font57 = load_ttf_font("./m8stealth57.ttf").await.unwrap();
+    font57.set_filter(FilterMode::Linear);
+    let mut font89 = load_ttf_font("./m8stealth89.ttf").await.unwrap();
+    font89.set_filter(FilterMode::Linear);
     let mut decoder =
         opus::Decoder::new(48000, opus::Channels::Stereo).expect("Couldn't create opus decoder");
 
@@ -186,7 +190,7 @@ async fn main() {
     ]);
 
     let render_target = render_target(M8_SCREEN_WIDTH as u32, M8_SCREEN_HEIGHT as u32);
-    render_target.texture.set_filter(FilterMode::Nearest);
+    render_target.texture.set_filter(FilterMode::Linear);
     let mut camera = Camera2D::from_display_rect(Rect::new(
         0.0,
         0.0,
@@ -194,6 +198,10 @@ async fn main() {
         M8_SCREEN_HEIGHT as f32,
     ));
     camera.render_target = Some(render_target.clone());
+    let mut waveform: Option<Texture2D> = None;
+
+    let mut last_screen_width = screen_width();
+    let mut last_screen_height = screen_height();
 
     macro_rules! handle_sample {
         ($sample:ty) => {{
@@ -329,7 +337,7 @@ async fn main() {
                                             {
                                                 draw_rectangle(
                                                     x,
-                                                    y + 11.0 - 9.0,
+                                                    y + 11.0 - 10.0,
                                                     8.0,
                                                     11.0,
                                                     Color::from_rgba(
@@ -341,14 +349,17 @@ async fn main() {
                                                 );
                                             }
 
+                                            let (font_size, font_scale, font_aspect) =
+                                                camera_font_scale(10.0);
                                             draw_text_ex(
                                                 char,
                                                 x,
                                                 y + 11.0, // + 11?
                                                 TextParams {
                                                     font: Some(font),
-                                                    font_size: 10,
-                                                    font_scale: 1.0,
+                                                    font_size,
+                                                    font_scale,
+                                                    font_scale_aspect: font_aspect,
                                                     color: Color::from_rgba(
                                                         foreground_r,
                                                         foreground_g,
@@ -364,26 +375,27 @@ async fn main() {
                                             let r = color[0];
                                             let g = color[1];
                                             let b = color[2];
-                                            let height = (24f32 / 320f32) * M8_SCREEN_WIDTH as f32;
-                                            draw_rectangle(
-                                                0.0,
-                                                0.0,
-                                                M8_SCREEN_WIDTH as f32,
-                                                height,
-                                                Color::from_rgba(0, 0, 0, 255),
-                                            );
-
-                                            for (idx, y) in data.iter().enumerate() {
-                                                // if y == &255 {
-                                                //     continue;
-                                                // }
-                                                draw_rectangle(
-                                                    idx as f32,
-                                                    *y.min(&20) as f32,
-                                                    1.0,
-                                                    1.0,
-                                                    Color::from_rgba(r, g, b, 255),
+                                            if data.is_empty() {
+                                                waveform = None;
+                                            } else {
+                                                let mut image = Image::gen_image_color(
+                                                    M8_SCREEN_WIDTH as u16,
+                                                    WAVE_HEIGHT as u16,
+                                                    BLACK,
                                                 );
+                                                for (idx, y) in data.iter().enumerate() {
+                                                    // if y == &255 {
+                                                    //     continue;
+                                                    // }
+                                                    image.set_pixel(
+                                                        idx as u32,
+                                                        (*y as u32).min(WAVE_HEIGHT as u32 - 1),
+                                                        Color::from_rgba(r, g, b, 255),
+                                                    );
+                                                }
+                                                let texture = Texture2D::from_image(&image);
+                                                texture.set_filter(FilterMode::Linear);
+                                                waveform = Some(texture);
                                             }
                                         }
                                         [SYSTEM_FRAME] => {
@@ -399,6 +411,14 @@ async fn main() {
                             _ => todo!(),
                         }
                     }
+                }
+
+                if screen_height() != last_screen_height || screen_width() != last_screen_width {
+                    last_screen_height = screen_height();
+                    last_screen_width = screen_width();
+                    websocket.send_bytes(&[0x44]);
+                    websocket.send_bytes(&[0x45, 0x52]);
+                    clear_background(BLACK);
                 }
 
                 set_default_camera();
@@ -454,6 +474,25 @@ async fn main() {
                         ..Default::default()
                     },
                 );
+
+                if let Some(waveform) = &waveform {
+                    let x = (screen_width() - width) / 2.0;
+                    let y = (screen_height() - height) / 2.0;
+                    let height = (width / 320.0) * WAVE_HEIGHT as f32;
+
+                    draw_texture_ex(
+                        waveform,
+                        x,
+                        y,
+                        WHITE,
+                        DrawTextureParams {
+                            dest_size: Some(vec2(width, height)),
+                            flip_y: true,
+                            source: None,
+                            ..Default::default()
+                        },
+                    );
+                }
 
                 next_frame().await
             }
