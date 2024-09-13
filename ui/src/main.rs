@@ -223,6 +223,11 @@ async fn main() {
                 if websocket.connected() {
                     while let Some(msg) = websocket.try_recv() {
                         let (operations, wave_operation, audio) = parser.parse(&msg);
+
+                        for chunk in audio {
+                            audio_sender.send(chunk.to_vec()).unwrap()
+                        }
+
                         for operation in operations {
                             match operation {
                                 parser::Operation::ClearBackground => clear_background(BLACK),
@@ -250,6 +255,7 @@ async fn main() {
                                 }
                             }
                         }
+
                         match wave_operation {
                             None => (),
                             Some(parser::WaveOperation::ClearWave) => {
@@ -268,10 +274,6 @@ async fn main() {
                                 texture.set_filter(FilterMode::Linear);
                                 waveform = Some(texture);
                             }
-                        }
-
-                        for chunk in audio {
-                            audio_sender.send(chunk.to_vec()).unwrap()
                         }
                     }
                 }
