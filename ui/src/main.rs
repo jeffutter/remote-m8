@@ -172,7 +172,12 @@ async fn main() {
         M8_SCREEN_HEIGHT as f32,
     ));
     camera.render_target = Some(render_target.clone());
-    let mut waveform: Option<Texture2D> = None;
+    let waveform_texture = Texture2D::from_image(&Image::gen_image_color(
+        M8_SCREEN_WIDTH as u16,
+        WAVE_HEIGHT as u16,
+        BLACK,
+    ));
+    waveform_texture.set_filter(FilterMode::Linear);
 
     let mut last_screen_width = screen_width();
     let mut last_screen_height = screen_height();
@@ -247,7 +252,11 @@ async fn main() {
                         match wave_operation {
                             None => (),
                             Some(parser::WaveOperation::ClearWave) => {
-                                waveform = None;
+                                waveform_texture.update(&Image::gen_image_color(
+                                    M8_SCREEN_WIDTH as u16,
+                                    WAVE_HEIGHT as u16,
+                                    BLACK,
+                                ));
                             }
                             Some(parser::WaveOperation::DrawWave(points)) => {
                                 let mut image = Image::gen_image_color(
@@ -258,9 +267,7 @@ async fn main() {
                                 for (x, y, r, g, b) in points {
                                     image.set_pixel(x, y, Color::from_rgba(r, g, b, 255));
                                 }
-                                let texture = Texture2D::from_image(&image);
-                                texture.set_filter(FilterMode::Linear);
-                                waveform = Some(texture);
+                                waveform_texture.update(&image);
                             }
                         }
                     }
@@ -328,24 +335,22 @@ async fn main() {
                     },
                 );
 
-                if let Some(waveform) = &waveform {
-                    let x = (screen_width() - width) / 2.0;
-                    let y = (screen_height() - height) / 2.0;
-                    let height = (width / 320.0) * WAVE_HEIGHT as f32;
+                let x = (screen_width() - width) / 2.0;
+                let y = (screen_height() - height) / 2.0;
+                let height = (width / 320.0) * WAVE_HEIGHT as f32;
 
-                    draw_texture_ex(
-                        waveform,
-                        x,
-                        y,
-                        WHITE,
-                        DrawTextureParams {
-                            dest_size: Some(vec2(width, height)),
-                            flip_y: true,
-                            source: None,
-                            ..Default::default()
-                        },
-                    );
-                }
+                draw_texture_ex(
+                    &waveform_texture,
+                    x,
+                    y,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(width, height)),
+                        flip_y: true,
+                        source: None,
+                        ..Default::default()
+                    },
+                );
 
                 next_frame().await
             }
