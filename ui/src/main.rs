@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::mpsc::Receiver,
-};
+use std::collections::{HashMap, VecDeque};
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -9,6 +6,10 @@ use cpal::{
 };
 use itertools::interleave;
 use macroquad::{input::KeyCode, prelude::*};
+use ringbuf::{
+    traits::{Consumer, Producer, Split},
+    HeapCons, HeapRb,
+};
 use rubato::VecResampler;
 
 mod parser;
@@ -26,7 +27,6 @@ pub const M8_SCREEN_WIDTH: usize = 320;
 pub const M8_SCREEN_HEIGHT: usize = 240;
 pub const M8_ASPECT_RATIO: f32 = M8_SCREEN_WIDTH as f32 / M8_SCREEN_HEIGHT as f32;
 // const M8_SCREEN_WIDTH: usize = 480;
-//
 
 const OPUS_CHUNK_SIZE: usize = 960;
 const NUM_CHANNELS: usize = 2;
@@ -106,33 +106,19 @@ where
     }
 }
 
-fn write_audio<T: Sample + FromSample<f32>>(
-    audio_receiver: &mut Receiver<Vec<u8>>,
-    resampler: &mut Resampler<T>,
-    decoder: &mut opus::Decoder,
-    decode_buffer: &mut [f32; OPUS_CHUNK_SIZE * NUM_CHANNELS],
-    data: &mut [T],
-) {
-    let mut idx = 0;
-    while idx < data.len() {
-        let resampled = resampler.drain(data.len() - idx);
-        for s in resampled {
-            data[idx] = s;
-            idx += 1;
-        }
-
-        if idx < data.len() {
-            let packet = audio_receiver.recv().unwrap();
-            let n = decoder.decode_float(&packet, decode_buffer, false).unwrap();
-            resampler.extend(&decode_buffer[..n * NUM_CHANNELS]);
-        }
+fn write_audio<T: Sample + FromSample<f32>>(audio_receiver: &mut HeapCons<T>, data: &mut [T]) {
+    let mut last: Option<T> = None;
+    for v in data.iter_mut() {
+        *v = audio_receiver
+            .try_pop()
+            .unwrap_or(last.unwrap_or(T::from_sample(0f32)));
+        last = Some(*v);
     }
 }
 
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut decode_buffer = [0f32; OPUS_CHUNK_SIZE * NUM_CHANNELS];
-    let (audio_sender, mut audio_receiver) = std::sync::mpsc::channel::<Vec<u8>>();
 
     let host = cpal::default_host();
     let audio_device = host
@@ -195,19 +181,14 @@ async fn main() {
     macro_rules! handle_sample {
         ($sample:ty) => {{
             let sample_rate = supported_config.sample_rate().0 as usize;
+            let (mut audio_sender, mut audio_receiver) = HeapRb::new(SAMPLE_RATE).split();
             let mut resampler = Resampler::<$sample>::new(SAMPLE_RATE, sample_rate);
 
             let stream = audio_device
                 .build_output_stream(
                     &config,
                     move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                        write_audio::<$sample>(
-                            &mut audio_receiver,
-                            &mut resampler,
-                            &mut decoder,
-                            &mut decode_buffer,
-                            data,
-                        );
+                        write_audio::<$sample>(&mut audio_receiver, data);
                     },
                     err_fn,
                     None,
@@ -224,8 +205,15 @@ async fn main() {
                     while let Some(msg) = websocket.try_recv() {
                         let (operations, wave_operation, audio) = parser.parse(&msg);
 
-                        for chunk in audio {
-                            audio_sender.send(chunk.to_vec()).unwrap()
+                        for mut chunk in audio {
+                            let n = decoder
+                                .decode_float(&mut chunk, &mut decode_buffer, false)
+                                .unwrap();
+                            resampler.extend(&decode_buffer[..n * NUM_CHANNELS]);
+
+                            let _ = audio_sender.push_slice(
+                                &resampler.drain(1024 * 1024 * 1024).collect::<Vec<_>>(),
+                            );
                         }
 
                         for operation in operations {
