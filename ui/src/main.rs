@@ -11,6 +11,8 @@ use itertools::interleave;
 use macroquad::{input::KeyCode, prelude::*};
 use rubato::VecResampler;
 
+mod parser;
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "Remote M8 UI".to_owned(),
@@ -20,9 +22,9 @@ fn window_conf() -> Conf {
     }
 }
 
-const M8_SCREEN_WIDTH: usize = 320;
-const M8_SCREEN_HEIGHT: usize = 240;
-const M8_ASPECT_RATIO: f32 = M8_SCREEN_WIDTH as f32 / M8_SCREEN_HEIGHT as f32;
+pub const M8_SCREEN_WIDTH: usize = 320;
+pub const M8_SCREEN_HEIGHT: usize = 240;
+pub const M8_ASPECT_RATIO: f32 = M8_SCREEN_WIDTH as f32 / M8_SCREEN_HEIGHT as f32;
 // const M8_SCREEN_WIDTH: usize = 480;
 //
 
@@ -188,6 +190,7 @@ async fn main() {
 
     let mut last_screen_width = screen_width();
     let mut last_screen_height = screen_height();
+    let mut parser = parser::Parser::new();
 
     macro_rules! handle_sample {
         ($sample:ty) => {{
@@ -215,10 +218,60 @@ async fn main() {
 
             'runloop: loop {
                 // println!("FPS: {}", get_fps());
+                set_camera(&camera);
+                let (font_size, font_scale, font_aspect) = camera_font_scale(10.0);
                 if websocket.connected() {
                     while let Some(msg) = websocket.try_recv() {
-                        for operation in parser::parse(msg) {
-                            match operation {}
+                        let (operations, wave_operation, audio) = parser.parse(&msg);
+                        for operation in operations {
+                            match operation {
+                                parser::Operation::ClearBackground => clear_background(BLACK),
+                                parser::Operation::DrawRectangle(x, y, w, h, r, g, b) => {
+                                    draw_rectangle(x, y, w, h, Color::from_rgba(r, g, b, 255));
+                                }
+                                parser::Operation::DrawText(c, font, x, y, r, g, b) => {
+                                    let font = match font {
+                                        parser::Font::Font57 => &font57,
+                                        parser::Font::Font89 => &font89,
+                                    };
+                                    draw_text_ex(
+                                        &c.to_string(),
+                                        x,
+                                        y,
+                                        TextParams {
+                                            font: Some(font),
+                                            font_size,
+                                            font_scale,
+                                            font_scale_aspect: font_aspect,
+                                            color: Color::from_rgba(r, g, b, 255),
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        match wave_operation {
+                            None => (),
+                            Some(parser::WaveOperation::ClearWave) => {
+                                waveform = None;
+                            }
+                            Some(parser::WaveOperation::DrawWave(points)) => {
+                                let mut image = Image::gen_image_color(
+                                    M8_SCREEN_WIDTH as u16,
+                                    WAVE_HEIGHT as u16,
+                                    BLACK,
+                                );
+                                for (x, y, r, g, b) in points {
+                                    image.set_pixel(x, y, Color::from_rgba(r, g, b, 255));
+                                }
+                                let texture = Texture2D::from_image(&image);
+                                texture.set_filter(FilterMode::Linear);
+                                waveform = Some(texture);
+                            }
+                        }
+
+                        for chunk in audio {
+                            audio_sender.send(chunk.to_vec()).unwrap()
                         }
                     }
                 }

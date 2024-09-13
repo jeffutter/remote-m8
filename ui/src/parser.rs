@@ -1,3 +1,5 @@
+use crate::{M8_SCREEN_HEIGHT, M8_SCREEN_WIDTH, WAVE_HEIGHT};
+
 const RECT_FRAME: u8 = 0xfe;
 const TEXT_FRAME: u8 = 0xfd;
 const WAVE_FRAME: u8 = 0xfc;
@@ -10,6 +12,18 @@ const SLIP_FRAME_END: u8 = 0xc0;
 
 pub enum Operation {
     ClearBackground,
+    DrawRectangle(f32, f32, f32, f32, u8, u8, u8),
+    DrawText(char, Font, f32, f32, u8, u8, u8),
+}
+
+pub enum WaveOperation {
+    DrawWave(Vec<(u32, u32, u8, u8, u8)>),
+    ClearWave,
+}
+
+pub enum Font {
+    Font57,
+    Font89,
 }
 
 pub struct Parser {
@@ -29,14 +43,18 @@ impl Parser {
         }
     }
 
-    pub fn parse(&mut self, msg: &[u8]) -> Vec<Operation> {
-        let t = msg[0];
-        let rest = msg[1..];
+    pub fn parse<'a>(
+        &mut self,
+        msg: &'a [u8],
+    ) -> (Vec<Operation>, Option<WaveOperation>, Vec<&'a [u8]>) {
+        let mut operations = Vec::new();
+        let mut audio = Vec::new();
+        let mut wave_operation = None;
+        let rest = &msg[1..];
 
         match msg[0] {
-            [SERIAL_PACKET] => {
-                let chunks = rest.split(|x| x == SLIP_FRAME_END);
-                let mut operations = Vec::new();
+            SERIAL_PACKET => {
+                let chunks = rest.split(|x| x == &SLIP_FRAME_END);
 
                 for chunk in chunks {
                     if chunk.is_empty() {
@@ -51,18 +69,17 @@ impl Parser {
                     tmp.push(SLIP_FRAME_END);
                     let decoded = simple_slip::decode(&tmp).unwrap();
 
-                    let t = decoded[0];
-                    let frame = decoded[1..];
+                    let frame = &decoded[1..];
 
-                    match t {
-                        [RECT_FRAME] => {
+                    match decoded[0] {
+                        RECT_FRAME => {
                             let x = frame[0] as f32 + frame[1] as f32 * 256f32;
                             let y = frame[2] as f32 + frame[3] as f32 * 256f32;
                             let mut w = 1.0f32;
                             let mut h = 1.0f32;
-                            let mut r = last_r;
-                            let mut g = last_g;
-                            let mut b = last_b;
+                            let mut r = self.last_r;
+                            let mut g = self.last_g;
+                            let mut b = self.last_b;
 
                             match frame.len() {
                                 11 => {
@@ -88,21 +105,22 @@ impl Parser {
                                 _ => (),
                             }
 
-                            last_r = r;
-                            last_g = g;
-                            last_b = b;
+                            self.last_r = r;
+                            self.last_g = g;
+                            self.last_b = b;
 
                             if x == 0.0
                                 && y == 0.0
                                 && w >= M8_SCREEN_WIDTH as f32
                                 && h >= M8_SCREEN_HEIGHT as f32
                             {
-                                operations.push(operations::ClearBackground);
+                                operations.clear();
+                                operations.push(Operation::ClearBackground);
                             } else {
-                                draw_rectangle(x, y, w, h, Color::from_rgba(r, g, b, 255));
+                                operations.push(Operation::DrawRectangle(x, y, w, h, r, g, b));
                             }
                         }
-                        [TEXT_FRAME] => {
+                        TEXT_FRAME => {
                             let c = frame[0];
                             let x = frame[1] as f32 + frame[2] as f32 * 256f32;
                             let y = frame[3] as f32 + frame[4] as f32 * 256f32;
@@ -113,86 +131,76 @@ impl Parser {
                             let background_g = frame[9];
                             let background_b = frame[10];
 
-                            let font = match font_id {
-                                0 => &font57,
-                                1 => &font89,
-                                _ => unimplemented!(),
-                            };
-
-                            let c = &[c];
-                            let char = std::str::from_utf8(c).unwrap();
-
                             if (foreground_r, foreground_g, foreground_b)
                                 != (background_r, background_g, background_b)
                             {
-                                draw_rectangle(
+                                operations.push(Operation::DrawRectangle(
                                     x,
-                                    y + 11.0 - 10.0,
+                                    y + 1f32,
                                     8.0,
                                     11.0,
-                                    Color::from_rgba(background_r, background_g, background_b, 255),
-                                );
+                                    background_r,
+                                    background_g,
+                                    background_b,
+                                ));
                             }
 
-                            let (font_size, font_scale, font_aspect) = camera_font_scale(10.0);
-                            draw_text_ex(
-                                char,
+                            let font = match self.font_id {
+                                0 => Font::Font57,
+                                1 => Font::Font89,
+                                _ => unimplemented!(),
+                            };
+
+                            operations.push(Operation::DrawText(
+                                c as char,
+                                font,
                                 x,
-                                y + 11.0, // + 11?
-                                TextParams {
-                                    font: Some(font),
-                                    font_size,
-                                    font_scale,
-                                    font_scale_aspect: font_aspect,
-                                    color: Color::from_rgba(
-                                        foreground_r,
-                                        foreground_g,
-                                        foreground_b,
-                                        255,
-                                    ),
-                                    ..Default::default()
-                                },
-                            );
+                                y + 11.0,
+                                foreground_r,
+                                foreground_g,
+                                foreground_b,
+                            ));
                         }
-                        [WAVE_FRAME] => {
+                        WAVE_FRAME => {
                             let (color, data) = frame.split_at(3);
                             let r = color[0];
                             let g = color[1];
                             let b = color[2];
                             if data.is_empty() {
-                                waveform = None;
+                                wave_operation = Some(WaveOperation::ClearWave)
+                                // operations.push(Operation::ClearWave);
                             } else {
-                                let mut image = Image::gen_image_color(
-                                    M8_SCREEN_WIDTH as u16,
-                                    WAVE_HEIGHT as u16,
-                                    BLACK,
-                                );
-                                for (idx, y) in data.iter().enumerate() {
-                                    // if y == &255 {
-                                    //     continue;
-                                    // }
-                                    image.set_pixel(
-                                        idx as u32,
-                                        (*y as u32).min(WAVE_HEIGHT as u32 - 1),
-                                        Color::from_rgba(r, g, b, 255),
-                                    );
-                                }
-                                let texture = Texture2D::from_image(&image);
-                                texture.set_filter(FilterMode::Linear);
-                                waveform = Some(texture);
+                                let points = data
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(idx, y)| {
+                                        (
+                                            idx as u32,
+                                            (*y as u32).min(WAVE_HEIGHT as u32 - 1),
+                                            r,
+                                            g,
+                                            b,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                // operations.push(Operation::DrawWave(points));
+                                wave_operation = Some(WaveOperation::DrawWave(points));
                             }
                         }
-                        [SYSTEM_FRAME] => {
-                            font_id = frame[4];
+                        SYSTEM_FRAME => {
+                            self.font_id = frame[4];
                         }
                         _ => (),
                     }
                 }
             }
-            [AUDIO_PACKET] => {
-                audio_sender.send(rest.to_vec()).unwrap();
+            AUDIO_PACKET => {
+                audio.push(rest);
             }
             _ => todo!(),
         }
+
+        (operations, wave_operation, audio)
     }
 }
