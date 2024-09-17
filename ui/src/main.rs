@@ -138,7 +138,7 @@ fn write_audio<T: Sample + FromSample<f32>>(
 
     if data.len() - written > 0 {
         let last = data[written];
-        println!("Short: {} samples", data.len() - written);
+        // println!("Short: {} samples", data.len() - written);
         for dest in data.iter_mut().skip(written) {
             *dest = last;
         }
@@ -195,6 +195,53 @@ impl State {
     }
 }
 
+struct InputProcessor {
+    keymap: HashMap<KeyCode, usize>,
+    key_state: u8,
+}
+
+impl InputProcessor {
+    fn new() -> Self {
+        let keymap = HashMap::from([
+            (KeyCode::Up, 6),
+            (KeyCode::Down, 5),
+            (KeyCode::Left, 7),
+            (KeyCode::Right, 2),
+            (KeyCode::LeftShift, 4),
+            (KeyCode::Space, 3),
+            (KeyCode::Z, 1),
+            (KeyCode::X, 0),
+        ]);
+
+        Self {
+            keymap,
+            key_state: 0,
+        }
+    }
+
+    fn process_key(
+        &mut self,
+        keycode: KeyCode,
+        down: bool,
+        websocket: &mut quad_net::web_socket::WebSocket,
+    ) {
+        if let Some(bit) = self.keymap.get(&keycode) {
+            let new_state = match down {
+                true => self.key_state | (1 << bit),
+                false => self.key_state & !(1 << bit),
+            };
+
+            if new_state == self.key_state {
+                return;
+            }
+
+            self.key_state = new_state;
+
+            websocket.send_bytes(&[0x43, self.key_state]);
+        }
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let host = cpal::default_host();
@@ -226,18 +273,7 @@ async fn main() {
     let url = "ws://192.168.10.12:4000/ws".to_string();
     let mut websocket = quad_net::web_socket::WebSocket::connect(url).unwrap();
 
-    let mut keystate = 0;
-
-    let keymap = HashMap::from([
-        (KeyCode::Up, 6),
-        (KeyCode::Down, 5),
-        (KeyCode::Left, 7),
-        (KeyCode::Right, 2),
-        (KeyCode::LeftShift, 4),
-        (KeyCode::Space, 3),
-        (KeyCode::Z, 1),
-        (KeyCode::X, 0),
-    ]);
+    let mut input_processor = InputProcessor::new();
 
     let render_target = render_target(M8_SCREEN_WIDTH as u32, M8_SCREEN_HEIGHT as u32);
     render_target.texture.set_filter(FilterMode::Linear);
@@ -289,12 +325,34 @@ async fn main() {
     'runloop: loop {
         // println!("FPS: {}", get_fps());
 
+        // Websocket Data
         if websocket.connected() {
             while let Some(msg) = websocket.try_recv() {
                 parser.parse(&msg, &mut state);
             }
         }
 
+        // Input
+        for keycode in get_keys_pressed() {
+            if keycode == KeyCode::Q {
+                break 'runloop;
+            }
+            input_processor.process_key(keycode, true, &mut websocket);
+        }
+        for keycode in get_keys_released() {
+            input_processor.process_key(keycode, false, &mut websocket);
+        }
+
+        // If screen size changed, tell m8 to redraw and clear the background
+        if screen_height() != last_screen_height || screen_width() != last_screen_width {
+            last_screen_height = screen_height();
+            last_screen_width = screen_width();
+            websocket.send_bytes(&[0x44]);
+            websocket.send_bytes(&[0x45, 0x52]);
+            clear_background(BLACK);
+        }
+
+        // Draw Texture
         set_camera(&camera);
         let (font_size, font_scale, font_aspect) = camera_font_scale(10.0);
 
@@ -345,44 +403,10 @@ async fn main() {
             }
         }
 
-        if screen_height() != last_screen_height || screen_width() != last_screen_width {
-            last_screen_height = screen_height();
-            last_screen_width = screen_width();
-            websocket.send_bytes(&[0x44]);
-            websocket.send_bytes(&[0x45, 0x52]);
-            clear_background(BLACK);
-        }
-
+        // Draw Main
         set_default_camera();
 
         clear_background(BLACK);
-
-        let mut process_key = |key_code: KeyCode, down: bool| {
-            if let Some(bit) = keymap.get(&key_code) {
-                let new_state = match down {
-                    true => keystate | (1 << bit),
-                    false => keystate & !(1 << bit),
-                };
-
-                if new_state == keystate {
-                    return;
-                }
-
-                keystate = new_state;
-
-                websocket.send_bytes(&[0x43, keystate]);
-            }
-        };
-
-        for keycode in get_keys_pressed() {
-            if keycode == KeyCode::Q {
-                break 'runloop;
-            }
-            process_key(keycode, true);
-        }
-        for keycode in get_keys_released() {
-            process_key(keycode, false);
-        }
 
         let (width, height) = match (screen_width(), screen_height()) {
             (width, height) if width >= height * M8_ASPECT_RATIO => {
@@ -409,7 +433,7 @@ async fn main() {
 
         let x = (screen_width() - width) / 2.0;
         let y = (screen_height() - height) / 2.0;
-        let height = (width / 320.0) * WAVE_HEIGHT as f32;
+        let height = (width / M8_SCREEN_WIDTH as f32) * WAVE_HEIGHT as f32;
 
         draw_texture_ex(
             &waveform_texture,
