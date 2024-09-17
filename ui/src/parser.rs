@@ -43,7 +43,7 @@ impl Parser {
         }
     }
 
-    pub fn parse<'a>(&mut self, msg: &'a [u8], state: &mut State) {
+    pub fn parse(&mut self, msg: &[u8], state: &mut State) {
         let rest = &msg[1..];
 
         match msg[0] {

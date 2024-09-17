@@ -8,7 +8,7 @@ use itertools::Itertools;
 use macroquad::{input::KeyCode, prelude::*};
 use parser::{Operation, WaveOperation};
 use ringbuf::{
-    traits::{Consumer, Observer, Producer, Split},
+    traits::{Consumer, Producer, Split},
     HeapCons, HeapProd, HeapRb,
 };
 use rubato::Resampler;
@@ -31,12 +31,12 @@ pub const M8_ASPECT_RATIO: f32 = M8_SCREEN_WIDTH as f32 / M8_SCREEN_HEIGHT as f3
 
 const OPUS_CHUNK_SIZE: usize = 960;
 const NUM_CHANNELS: usize = 2;
-const SAMPLE_RATE: usize = 48000;
+const OPUS_SAMPLE_RATE: usize = 48000;
 
 const WAVE_HEIGHT: usize = 26;
 
 struct AudioResampler {
-    resampler: rubato::FftFixedOut<f32>,
+    resampler: rubato::FftFixedInOut<f32>,
     src_rate: usize,
     dest_rate: usize,
     input_buffers: Vec<Vec<f32>>,
@@ -46,26 +46,11 @@ struct AudioResampler {
 
 impl AudioResampler {
     fn new(src_rate: usize, dest_rate: usize) -> Self {
-        // Math here is flipped since we don't actually want OPUS_CHUNK_SIZED INPUT, we want
-        // OPUS_CHUNK_SIZED output.
-        // let sample_ratio = dest_rate as f32 / src_rate as f32;
-        // let in_chunk_size = (OPUS_CHUNK_SIZE as f32 * sample_ratio) as usize;
-
-        // let out_chunk_size = dest_rate / 120; // 2ms
-        let out_chunk_size = dest_rate / 10;
-        // let out_chunk_size = dest_rate;
-        println!("Out Chunk Size: {}", out_chunk_size);
         let resampler =
-            rubato::FftFixedOut::<f32>::new(src_rate, dest_rate, out_chunk_size, 2, NUM_CHANNELS)
+            rubato::FftFixedInOut::<f32>::new(src_rate, dest_rate, OPUS_CHUNK_SIZE, NUM_CHANNELS)
                 .unwrap();
-        // let input_buffers = resampler.input_buffer_allocate(true);
-        // let output_buffers = resampler.output_buffer_allocate(true);
-        let input_buffers = (0..NUM_CHANNELS)
-            .map(|_| vec![0f32; dest_rate])
-            .collect_vec();
-        let output_buffers = (0..NUM_CHANNELS)
-            .map(|_| vec![0f32; dest_rate])
-            .collect_vec();
+        let input_buffers = resampler.input_buffer_allocate(true);
+        let output_buffers = resampler.output_buffer_allocate(true);
 
         Self {
             resampler,
@@ -77,17 +62,7 @@ impl AudioResampler {
         }
     }
 
-    fn ratio(&self) -> f32 {
-        self.src_rate as f32 / self.dest_rate as f32
-    }
-
-    fn input_frames_next(&self) -> usize {
-        self.resampler.input_frames_next()
-    }
-
     fn resample(&mut self, samples: &[f32]) -> Box<dyn Iterator<Item = f32> + '_> {
-        println!("In Samples: {}", samples.len());
-        // self.output_buffer.clear();
         self.output_buffer = vec![0f32; self.dest_rate * NUM_CHANNELS];
 
         if self.src_rate == self.dest_rate {
@@ -110,24 +85,6 @@ impl AudioResampler {
             *r = src[1];
         }
 
-        println!(
-            "Input Buffers: {} - Out Buffers: {}, {}",
-            samples.len() / 2,
-            self.output_buffers[0].len(),
-            self.output_buffers[1].len()
-        );
-
-        println!(
-            "Input Frames Next: {} / {}",
-            self.resampler.input_frames_next(),
-            self.resampler.input_frames_max()
-        );
-        println!(
-            "Output Frames Next: {} / {}",
-            self.resampler.output_frames_next(),
-            self.resampler.output_frames_max()
-        );
-
         let (_in_len, out_len_per_channel) = self
             .resampler
             .process_into_buffer(
@@ -146,7 +103,7 @@ impl AudioResampler {
         for (dest, (l, r)) in self
             .output_buffer
             .chunks_exact_mut(2)
-            .take(out_len_per_channel * NUM_CHANNELS)
+            .take(out_len_per_channel)
             .zip(
                 self.output_buffers[0]
                     .iter()
@@ -157,8 +114,6 @@ impl AudioResampler {
             dest[1] = *r;
         }
 
-        // &self.output_buffer[..(out_len_per_channel * NUM_CHANNELS)]
-        println!("DRAIN: {}", out_len_per_channel * NUM_CHANNELS);
         Box::new(
             self.output_buffer
                 .drain(..(out_len_per_channel * NUM_CHANNELS)),
@@ -168,30 +123,25 @@ impl AudioResampler {
 
 fn write_audio<T: Sample + FromSample<f32>>(
     audio_receiver: &mut HeapCons<f32>,
-    resampler: &mut AudioResampler,
-    resampled_buffer: &mut HeapRb<f32>,
+    write_buffer: &mut [f32; 2048],
     data: &mut [T],
 ) {
-    if (audio_receiver.occupied_len() + resampled_buffer.occupied_len()) < data.len() {
-        // TODO: Probably the end of the audio? Maybe should partial resample?
-        println!(
-            "Not enough Audio in buffers: {} + {} < {}",
-            audio_receiver.occupied_len(),
-            resampled_buffer.occupied_len(),
-            data.len()
-        );
-        return;
-    }
-    println!("Processing for {} samples", data.len());
+    let written = audio_receiver.pop_slice(&mut write_buffer[..data.len()]);
 
-    if audio_receiver.occupied_len() >= resampler.input_frames_next() * NUM_CHANNELS {
-        println!("resampling");
-        let resampled = resampler.resample(&audio_receiver.pop_iter().collect_vec());
-        resampled_buffer.push_slice(&resampled.collect_vec());
+    for (src, dest) in write_buffer[..written]
+        .iter()
+        .map(|x| T::from_sample(*x))
+        .zip(data.iter_mut())
+    {
+        *dest = src;
     }
 
-    for (src, dest) in resampled_buffer.pop_iter().zip(data.iter_mut()) {
-        *dest = T::from_sample(src);
+    if data.len() - written > 0 {
+        let last = data[written];
+        println!("Short: {} samples", data.len() - written);
+        for dest in data.iter_mut().skip(written) {
+            *dest = last;
+        }
     }
 }
 
@@ -201,19 +151,21 @@ struct State {
     audio_producer: HeapProd<f32>,
     decoder: opus::Decoder,
     decode_buffer: [f32; OPUS_CHUNK_SIZE * NUM_CHANNELS],
+    resampler: AudioResampler,
 }
 
 impl State {
-    fn new() -> (Self, HeapCons<f32>) {
-        let (audio_producer, audio_receiver) = HeapRb::new(SAMPLE_RATE).split();
+    fn new(src_rate: usize, dest_rate: usize) -> (Self, HeapCons<f32>) {
+        let (audio_producer, audio_receiver) = HeapRb::<f32>::new(dest_rate * 4).split();
         (
             Self {
                 operations: Vec::new(),
                 waveform: None,
                 audio_producer,
                 decode_buffer: [0f32; OPUS_CHUNK_SIZE * NUM_CHANNELS],
-                decoder: opus::Decoder::new(SAMPLE_RATE as u32, opus::Channels::Stereo)
+                decoder: opus::Decoder::new(OPUS_SAMPLE_RATE as u32, opus::Channels::Stereo)
                     .expect("Couldn't create opus decoder"),
+                resampler: AudioResampler::new(src_rate, dest_rate),
             },
             audio_receiver,
         )
@@ -236,7 +188,10 @@ impl State {
             .decoder
             .decode_float(audio, &mut self.decode_buffer, false)
             .unwrap();
-        self.audio_producer.push_slice(&self.decode_buffer[..n]);
+        let decoded = &self.decode_buffer[..(n * NUM_CHANNELS)];
+        let resampled = self.resampler.resample(decoded).collect_vec();
+
+        self.audio_producer.push_slice(&resampled);
     }
 }
 
@@ -260,7 +215,7 @@ async fn main() {
     );
     let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
     let sample_format = supported_config.sample_format();
-    let sample_rate = supported_config.sample_rate().0 as usize;
+    let dest_sample_rate = supported_config.sample_rate().0 as usize;
     let config: StreamConfig = supported_config.clone().into();
 
     let mut font57 = load_ttf_font("./m8stealth57.ttf").await.unwrap();
@@ -304,12 +259,8 @@ async fn main() {
     let mut last_screen_height = screen_height();
     let mut parser = parser::Parser::new();
 
-    let mut resampler = AudioResampler::new(SAMPLE_RATE, sample_rate);
-
-    let (mut state, mut audio_receiver) = State::new();
-
-    let mut resampled_buffer =
-        HeapRb::new((SAMPLE_RATE as f32 * resampler.ratio()).ceil() as usize);
+    let (mut state, mut audio_receiver) = State::new(OPUS_SAMPLE_RATE, dest_sample_rate);
+    let mut write_buffer = [0f32; 2048];
 
     macro_rules! handle_sample {
         ($sample:ty) => {
@@ -317,12 +268,7 @@ async fn main() {
                 .build_output_stream(
                     &config,
                     move |data: &mut [$sample], _: &cpal::OutputCallbackInfo| {
-                        write_audio::<$sample>(
-                            &mut audio_receiver,
-                            &mut resampler,
-                            &mut resampled_buffer,
-                            data,
-                        );
+                        write_audio::<$sample>(&mut audio_receiver, &mut write_buffer, data);
                     },
                     err_fn,
                     None,
@@ -348,17 +294,6 @@ async fn main() {
                 parser.parse(&msg, &mut state);
             }
         }
-
-        // if (Instant::now() - last_update) <= Duration::from_millis(5) {
-        //     println!(
-        //         "Skipping Redraw. To Render: {} operations",
-        //         state.operations.len()
-        //     );
-        //     next_frame().await;
-        //     continue;
-        // }
-        // last_update = Instant::now();
-        // println!("To Render: {} operations", state.operations.len());
 
         set_camera(&camera);
         let (font_size, font_scale, font_aspect) = camera_font_scale(10.0);
