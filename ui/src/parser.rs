@@ -1,4 +1,4 @@
-use crate::{M8_SCREEN_HEIGHT, M8_SCREEN_WIDTH, WAVE_HEIGHT};
+use crate::{State, M8_SCREEN_HEIGHT, M8_SCREEN_WIDTH, WAVE_HEIGHT};
 
 const RECT_FRAME: u8 = 0xfe;
 const TEXT_FRAME: u8 = 0xfd;
@@ -43,13 +43,7 @@ impl Parser {
         }
     }
 
-    pub fn parse<'a>(
-        &mut self,
-        msg: &'a [u8],
-    ) -> (Vec<Operation>, Option<WaveOperation>, Vec<&'a [u8]>) {
-        let mut operations = Vec::new();
-        let mut audio = Vec::new();
-        let mut wave_operation = None;
+    pub fn parse<'a>(&mut self, msg: &'a [u8], state: &mut State) {
         let rest = &msg[1..];
 
         match msg[0] {
@@ -114,10 +108,11 @@ impl Parser {
                                 && w >= M8_SCREEN_WIDTH as f32
                                 && h >= M8_SCREEN_HEIGHT as f32
                             {
-                                operations.clear();
-                                operations.push(Operation::ClearBackground);
+                                state.clear_operations();
+                                state.queue_operation(Operation::ClearBackground);
                             } else {
-                                operations.push(Operation::DrawRectangle(x, y, w, h, r, g, b));
+                                state
+                                    .queue_operation(Operation::DrawRectangle(x, y, w, h, r, g, b));
                             }
                         }
                         TEXT_FRAME => {
@@ -134,7 +129,7 @@ impl Parser {
                             if (foreground_r, foreground_g, foreground_b)
                                 != (background_r, background_g, background_b)
                             {
-                                operations.push(Operation::DrawRectangle(
+                                state.queue_operation(Operation::DrawRectangle(
                                     x,
                                     y + 1f32,
                                     8.0,
@@ -151,7 +146,7 @@ impl Parser {
                                 _ => unimplemented!(),
                             };
 
-                            operations.push(Operation::DrawText(
+                            state.queue_operation(Operation::DrawText(
                                 c as char,
                                 font,
                                 x,
@@ -167,7 +162,7 @@ impl Parser {
                             let g = color[1];
                             let b = color[2];
                             if data.is_empty() {
-                                wave_operation = Some(WaveOperation::ClearWave)
+                                state.set_waveform(WaveOperation::ClearWave);
                                 // operations.push(Operation::ClearWave);
                             } else {
                                 let points = data
@@ -185,7 +180,7 @@ impl Parser {
                                     .collect::<Vec<_>>();
 
                                 // operations.push(Operation::DrawWave(points));
-                                wave_operation = Some(WaveOperation::DrawWave(points));
+                                state.set_waveform(WaveOperation::DrawWave(points));
                             }
                         }
                         SYSTEM_FRAME => {
@@ -196,11 +191,9 @@ impl Parser {
                 }
             }
             AUDIO_PACKET => {
-                audio.push(rest);
+                state.enqueue_audio(rest);
             }
             _ => todo!(),
         }
-
-        (operations, wave_operation, audio)
     }
 }
