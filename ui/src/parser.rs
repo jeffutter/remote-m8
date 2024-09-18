@@ -150,7 +150,7 @@ impl Parser {
                                 c as char,
                                 font,
                                 x,
-                                y + 11.0,
+                                y + 10.0,
                                 foreground_r,
                                 foreground_g,
                                 foreground_b,

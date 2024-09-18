@@ -150,9 +150,9 @@ async fn main() {
     let config: StreamConfig = supported_config.clone().into();
 
     let mut font57 = load_ttf_font("./m8stealth57.ttf").await.unwrap();
-    font57.set_filter(FilterMode::Linear);
+    font57.set_filter(FilterMode::Nearest);
     let mut font89 = load_ttf_font("./m8stealth89.ttf").await.unwrap();
-    font89.set_filter(FilterMode::Linear);
+    font89.set_filter(FilterMode::Nearest);
 
     let url = "ws://192.168.10.12:4000/ws".to_string();
     let mut websocket = quad_net::web_socket::WebSocket::connect(url).unwrap();
@@ -160,7 +160,7 @@ async fn main() {
     let mut input_processor = InputProcessor::new();
 
     let render_target = render_target(M8_SCREEN_WIDTH as u32, M8_SCREEN_HEIGHT as u32);
-    render_target.texture.set_filter(FilterMode::Linear);
+    render_target.texture.set_filter(FilterMode::Nearest);
     let mut camera = Camera2D::from_display_rect(Rect::new(
         0.0,
         0.0,
@@ -173,7 +173,7 @@ async fn main() {
         WAVE_HEIGHT as u16,
         BLACK,
     ));
-    waveform_texture.set_filter(FilterMode::Linear);
+    waveform_texture.set_filter(FilterMode::Nearest);
 
     let mut last_screen_width = screen_width();
     let mut last_screen_height = screen_height();
@@ -229,6 +229,10 @@ async fn main() {
                 if keycode == KeyCode::Q {
                     break 'runloop;
                 }
+                // if keycode == KeyCode::P {
+                //     // Pause to debug a frame
+                //     thread::sleep(Duration::from_secs(10));
+                // }
                 input_processor.process_key(keycode, true, &mut websocket);
             }
             for keycode in get_keys_released() {
@@ -255,7 +259,6 @@ async fn main() {
 
         // Draw Texture
         set_camera(&camera);
-        let (font_size, font_scale, font_aspect) = camera_font_scale(10.0);
 
         for operation in state.operations.drain(..) {
             match operation {
@@ -274,9 +277,9 @@ async fn main() {
                         y,
                         TextParams {
                             font: Some(font),
-                            font_size,
-                            font_scale,
-                            font_scale_aspect: font_aspect,
+                            font_size: 16,
+                            font_scale: 0.5,
+                            font_scale_aspect: 1.0,
                             color: Color::from_rgba(r, g, b, 255),
                             ..Default::default()
                         },
@@ -303,6 +306,19 @@ async fn main() {
                 waveform_texture.update(&image);
             }
         }
+
+        draw_texture_ex(
+            &waveform_texture,
+            0.0,
+            0.0,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(M8_SCREEN_WIDTH as f32, WAVE_HEIGHT as f32)),
+                flip_y: true,
+                source: None,
+                ..Default::default()
+            },
+        );
 
         // Draw Main
         set_default_camera();
@@ -337,23 +353,15 @@ async fn main() {
             },
         );
 
-        let wave_height = (viewport_width / M8_SCREEN_WIDTH as f32) * WAVE_HEIGHT as f32;
-
-        draw_texture_ex(
-            &waveform_texture,
-            screen_left,
-            screen_top,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(viewport_width, wave_height)),
-                flip_y: true,
-                source: None,
-                ..Default::default()
-            },
-        );
-
         draw_text(
-            &format!("{} FPS", get_fps()),
+            &format!(
+                "{} FPS - {}x{} ({}x{}) ",
+                get_fps(),
+                viewport_width,
+                viewport_height,
+                screen_width(),
+                screen_height()
+            ),
             10.0,
             screen_height() - 20.0,
             20.0,
