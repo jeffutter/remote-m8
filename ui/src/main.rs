@@ -1,18 +1,23 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    thread,
+    time::{Duration, Instant},
+};
 
+use audio::{write_audio, AudioDecoder, AudioResampler, OPUS_SAMPLE_RATE};
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    FromSample, Sample, SampleFormat, StreamConfig,
+    SampleFormat, StreamConfig,
 };
 use itertools::Itertools;
 use macroquad::{input::KeyCode, prelude::*};
 use parser::{Operation, WaveOperation};
 use ringbuf::{
-    traits::{Consumer, Producer, Split},
+    traits::{Producer, Split},
     HeapCons, HeapProd, HeapRb,
 };
-use rubato::Resampler;
 
+mod audio;
 mod parser;
 
 fn window_conf() -> Conf {
@@ -29,129 +34,14 @@ pub const M8_SCREEN_HEIGHT: usize = 240;
 pub const M8_ASPECT_RATIO: f32 = M8_SCREEN_WIDTH as f32 / M8_SCREEN_HEIGHT as f32;
 // const M8_SCREEN_WIDTH: usize = 480;
 
-const OPUS_CHUNK_SIZE: usize = 960;
-const NUM_CHANNELS: usize = 2;
-const OPUS_SAMPLE_RATE: usize = 48000;
-
 const WAVE_HEIGHT: usize = 26;
-
-struct AudioResampler {
-    resampler: rubato::FftFixedInOut<f32>,
-    src_rate: usize,
-    dest_rate: usize,
-    input_buffers: Vec<Vec<f32>>,
-    output_buffers: Vec<Vec<f32>>,
-    output_buffer: Vec<f32>,
-}
-
-impl AudioResampler {
-    fn new(src_rate: usize, dest_rate: usize) -> Self {
-        let resampler =
-            rubato::FftFixedInOut::<f32>::new(src_rate, dest_rate, OPUS_CHUNK_SIZE, NUM_CHANNELS)
-                .unwrap();
-        let input_buffers = resampler.input_buffer_allocate(true);
-        let output_buffers = resampler.output_buffer_allocate(true);
-
-        Self {
-            resampler,
-            src_rate,
-            dest_rate,
-            input_buffers,
-            output_buffers,
-            output_buffer: vec![0f32; dest_rate * NUM_CHANNELS],
-        }
-    }
-
-    fn resample(&mut self, samples: &[f32]) -> Box<dyn Iterator<Item = f32> + '_> {
-        self.output_buffer = vec![0f32; self.dest_rate * NUM_CHANNELS];
-
-        if self.src_rate == self.dest_rate {
-            self.output_buffer.extend_from_slice(samples);
-            return Box::new(self.output_buffer.drain(..));
-        }
-
-        // Split left + right
-        // SIMD Optimized deinterleave
-        let (lbuffs, rbuffs) = self.input_buffers.split_at_mut(1);
-        let lbuff = &mut lbuffs[0][..];
-        let rbuff = &mut rbuffs[0][..];
-
-        for ((l, r), src) in lbuff
-            .iter_mut()
-            .zip(rbuff.iter_mut())
-            .zip(samples.chunks_exact(2))
-        {
-            *l = src[0];
-            *r = src[1];
-        }
-
-        let (_in_len, out_len_per_channel) = self
-            .resampler
-            .process_into_buffer(
-                &[
-                    &self.input_buffers[0][..samples.len() / 2],
-                    &self.input_buffers[1][..samples.len() / 2],
-                ],
-                &mut self.output_buffers,
-                None,
-            )
-            .unwrap();
-
-        //TODO: More than 2 channels?
-        //Can probably just hardcode everything to 2
-        // SIMD Optimized interleave
-        for (dest, (l, r)) in self
-            .output_buffer
-            .chunks_exact_mut(2)
-            .take(out_len_per_channel)
-            .zip(
-                self.output_buffers[0]
-                    .iter()
-                    .zip(self.output_buffers[1].iter()),
-            )
-        {
-            dest[0] = *l;
-            dest[1] = *r;
-        }
-
-        Box::new(
-            self.output_buffer
-                .drain(..(out_len_per_channel * NUM_CHANNELS)),
-        )
-    }
-}
-
-fn write_audio<T: Sample + FromSample<f32>>(
-    audio_receiver: &mut HeapCons<f32>,
-    write_buffer: &mut [f32; 2048],
-    data: &mut [T],
-) {
-    let written = audio_receiver.pop_slice(&mut write_buffer[..data.len()]);
-
-    for (src, dest) in write_buffer[..written]
-        .iter()
-        .map(|x| T::from_sample(*x))
-        .zip(data.iter_mut())
-    {
-        *dest = src;
-    }
-
-    if data.len() - written > 0 {
-        let last = data[written];
-        // println!("Short: {} samples", data.len() - written);
-        for dest in data.iter_mut().skip(written) {
-            *dest = last;
-        }
-    }
-}
 
 struct State {
     pub operations: Vec<Operation>,
     pub waveform: Option<WaveOperation>,
     audio_producer: HeapProd<f32>,
-    decoder: opus::Decoder,
-    decode_buffer: [f32; OPUS_CHUNK_SIZE * NUM_CHANNELS],
     resampler: AudioResampler,
+    decoder: AudioDecoder,
 }
 
 impl State {
@@ -162,10 +52,8 @@ impl State {
                 operations: Vec::new(),
                 waveform: None,
                 audio_producer,
-                decode_buffer: [0f32; OPUS_CHUNK_SIZE * NUM_CHANNELS],
-                decoder: opus::Decoder::new(OPUS_SAMPLE_RATE as u32, opus::Channels::Stereo)
-                    .expect("Couldn't create opus decoder"),
                 resampler: AudioResampler::new(src_rate, dest_rate),
+                decoder: AudioDecoder::new(),
             },
             audio_receiver,
         )
@@ -184,11 +72,7 @@ impl State {
     }
 
     fn enqueue_audio(&mut self, audio: &[u8]) {
-        let n = self
-            .decoder
-            .decode_float(audio, &mut self.decode_buffer, false)
-            .unwrap();
-        let decoded = &self.decode_buffer[..(n * NUM_CHANNELS)];
+        let decoded = self.decoder.decode(audio);
         let resampled = self.resampler.resample(decoded).collect_vec();
 
         self.audio_producer.push_slice(&resampled);
@@ -314,33 +198,50 @@ async fn main() {
     }
 
     let stream = match sample_format {
-        SampleFormat::F32 => handle_sample!(f32),
+        SampleFormat::I8 => handle_sample!(i8),
         SampleFormat::I16 => handle_sample!(i16),
+        SampleFormat::I32 => handle_sample!(i32),
+        SampleFormat::I64 => handle_sample!(i64),
+        SampleFormat::U8 => handle_sample!(u8),
         SampleFormat::U16 => handle_sample!(u16),
+        SampleFormat::U32 => handle_sample!(u32),
+        SampleFormat::U64 => handle_sample!(u64),
+        SampleFormat::F32 => handle_sample!(f32),
+        SampleFormat::F64 => handle_sample!(f64),
         sample_format => panic!("Unsupported sample format '{sample_format}'"),
     };
     stream.play().unwrap();
 
-    // let mut last_update = Instant::now();
+    let mut last_update = Instant::now();
     'runloop: loop {
         // println!("FPS: {}", get_fps());
 
-        // Websocket Data
-        if websocket.connected() {
-            while let Some(msg) = websocket.try_recv() {
-                parser.parse(&msg, &mut state);
+        'stall: loop {
+            // Websocket Data
+            if websocket.connected() {
+                while let Some(msg) = websocket.try_recv() {
+                    parser.parse(&msg, &mut state);
+                }
             }
-        }
 
-        // Input
-        for keycode in get_keys_pressed() {
-            if keycode == KeyCode::Q {
-                break 'runloop;
+            // Input
+            for keycode in get_keys_pressed() {
+                if keycode == KeyCode::Q {
+                    break 'runloop;
+                }
+                input_processor.process_key(keycode, true, &mut websocket);
             }
-            input_processor.process_key(keycode, true, &mut websocket);
-        }
-        for keycode in get_keys_released() {
-            input_processor.process_key(keycode, false, &mut websocket);
+            for keycode in get_keys_released() {
+                input_processor.process_key(keycode, false, &mut websocket);
+            }
+
+            let now = Instant::now();
+            if now - last_update >= Duration::from_millis(30) {
+                last_update = now;
+                break 'stall;
+            }
+            // next_frame().await;
+            thread::sleep(Duration::from_millis(1));
         }
 
         // If screen size changed, tell m8 to redraw and clear the background
@@ -408,44 +309,55 @@ async fn main() {
 
         clear_background(BLACK);
 
-        let (width, height) = match (screen_width(), screen_height()) {
+        let (viewport_width, viewport_height) = match (screen_width(), screen_height()) {
             (width, height) if width >= height * M8_ASPECT_RATIO => {
-                (height * M8_ASPECT_RATIO, height)
+                let width = (height * M8_ASPECT_RATIO).floor();
+                (width, height)
             }
             (width, height) if width <= height * M8_ASPECT_RATIO => {
-                (width, width / M8_ASPECT_RATIO)
+                let height = (width / M8_ASPECT_RATIO).floor();
+                (width, height)
             }
             (_, _) => unreachable!(),
         };
 
+        let screen_left = ((screen_width() - viewport_width) / 2.0).floor();
+        let screen_top = ((screen_height() - viewport_height) / 2.0).floor();
+
         draw_texture_ex(
             &render_target.texture,
-            (screen_width() - width) / 2.0,
-            (screen_height() - height) / 2.0,
+            screen_left,
+            screen_top,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(vec2(width, height)),
+                dest_size: Some(vec2(viewport_width, viewport_height)),
                 flip_y: true,
                 source: None,
                 ..Default::default()
             },
         );
 
-        let x = (screen_width() - width) / 2.0;
-        let y = (screen_height() - height) / 2.0;
-        let height = (width / M8_SCREEN_WIDTH as f32) * WAVE_HEIGHT as f32;
+        let wave_height = (viewport_width / M8_SCREEN_WIDTH as f32) * WAVE_HEIGHT as f32;
 
         draw_texture_ex(
             &waveform_texture,
-            x,
-            y,
+            screen_left,
+            screen_top,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(vec2(width, height)),
+                dest_size: Some(vec2(viewport_width, wave_height)),
                 flip_y: true,
                 source: None,
                 ..Default::default()
             },
+        );
+
+        draw_text(
+            &format!("{} FPS", get_fps()),
+            10.0,
+            screen_height() - 20.0,
+            20.0,
+            WHITE,
         );
 
         next_frame().await
