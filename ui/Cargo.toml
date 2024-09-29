@@ -10,7 +10,7 @@ simple_slip = "0.1.2"
 macroquad = "0.4.13"
 quad-net = { git = "https://github.com/not-fl3/quad-net.git", rev = "31796d4ed5c9cce57c7702d18b6140d5ffacfccf" }
 cpal = "0.15.3"
-rubato = "0.15.0"
+rubato = "0.16.0"
 itertools = "0.13.0"
 ringbuf = "0.4.4"
 
