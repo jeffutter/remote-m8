@@ -15,7 +15,7 @@ itertools = "0.13.0"
 log = "0.4.22"
 mime_guess = "2.0.5"
 opus = "0.3.0"
-rubato = "0.15.0"
+rubato = "0.16.0"
 rust-embed = { version = "8.5.0", features = ["compression"] }
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync", "time"] }
 tokio-serial = "5.4.4"
