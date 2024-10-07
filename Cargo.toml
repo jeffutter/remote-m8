@@ -9,7 +9,7 @@ axum = { version = "0.7.5", features = ["tokio", "ws"] }
 axum-extra = { version = "0.9.3", features = ["typed-header"] }
 clap = { version = "4.5.16", features = ["derive"] }
 cpal = { version = "0.15.3" }
-futures = "0.3.30"
+futures = "0.3.31"
 headers = "0.4.0"
 itertools = "0.13.0"
 log = "0.4.22"
