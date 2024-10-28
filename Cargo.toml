@@ -17,7 +17,7 @@ mime_guess = "2.0.5"
 opus = "0.3.0"
 rubato = "0.15.0"
 rust-embed = { version = "8.5.0", features = ["compression"] }
-tokio = { version = "1.40.0", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.41.0", features = ["rt-multi-thread", "sync", "time"] }
 tokio-serial = "5.4.4"
 tokio-tungstenite = "0.23.1"
 tokio-util = { version = "0.7.12", features = ["codec"] }
